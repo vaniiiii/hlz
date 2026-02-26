@@ -1,0 +1,65 @@
+
+{
+  "action_order_msgpack_hex": "0x83a474797065a56f72646572a66f72646572739187a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a163d92230783030303030303030303030303030303030303030303030303030303030303030a867726f7570696e67a26e61",
+  "action_order_msgpack_len": 112,
+  "action_order_rmp_hash": "0xc8aeff333a7682384e60ccfdd826057b957ce0ebb6d99d291faa854e2882688d",
+  "agent_connection_id": "0x53fa6d12be596a78d8b61e65851b1e5cfb91f81361f6570923b3b69e1390e937",
+  "agent_signature": "0xa3a46e29accf87e49ca132da1146eba96e5441bdb674a275ca90dbe805a192fe06a83e75e14700f2f6112ea079f7cd427c2a229828c3b83f1be9dd0afb32bd581b",
+  "agent_signing_hash": "0x7d67dd07e5d0a4bdded87df506e26f1f1e1169a513dba3cc1a1114fac1fd70bf",
+  "agent_struct_hash": "0x7126440dffa91e487262ade5f741cafd792ea44e24ae91b6a29b0e413240556d",
+  "agent_type_hash": "0x26f05c2f7239b6983075e58321292d77b3aa173d19b27257ac96ab362570f508",
+  "agent_type_string": "Agent(string source,bytes32 connectionId)",
+  "approve_agent_type_hash": "0x4bcaeec154f3072cca4f8fb0054aa2093a2ee67752a84c408cac9025350218e1",
+  "approve_agent_type_string": "ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)",
+  "convert_multisig_type_hash": "0x4d6d00355e2bd15e5b26b9ad66b32a90e419f3ee519e48884726aae43316a618",
+  "convert_multisig_type_string": "ConvertToMultiSigUser(string hyperliquidChain,string signers,uint64 nonce)",
+  "core_domain_separator": "0xd79297fcdf2ffcd4ae223d01edaa2ba214ff8f401d7c9300d995d17c82aa4040",
+  "decimal_vectors": [
+    {
+      "label": "10.0",
+      "msgpack_hex": "0x81a576616c7565a23130",
+      "normalized": "10"
+    },
+    {
+      "label": "0.1",
+      "msgpack_hex": "0x81a576616c7565a3302e31",
+      "normalized": "0.1"
+    },
+    {
+      "label": "100",
+      "msgpack_hex": "0x81a576616c7565a3313030",
+      "normalized": "100"
+    },
+    {
+      "label": "1.23",
+      "msgpack_hex": "0x81a576616c7565a4312e3233",
+      "normalized": "1.23"
+    }
+  ],
+  "hl_spot_send_type_hash": "0xd6d9472f429b5debb4cc4702fa9925e621498472a979f2581553dd007e273983",
+  "hl_usd_send_type_hash": "0xc7410964737e2180e258d649f23f74a49460432fecbd94688103ecc63fb66b4c",
+  "mainnet_domain_separator": "0x2f54e643b38c9c2b65cb731aaf11c54f01705ee0cdf45aea16e2ac0a5ce7531a",
+  "order_msgpack_hex": "0x82a66f72646572739187a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a163d92230783030303030303030303030303030303030303030303030303030303030303030a867726f7570696e67a26e61",
+  "order_msgpack_len": 101,
+  "order_rmp_hash": "0xf2dee6deaaff90f708f568f3bbaabb9c014e9243305736883e77422bf1dc753a",
+  "order_rmp_nonce": 1234567890,
+  "order_signature": "0xa90ae662eb1fc9ff3f00b92c8917a768839e0d78606d2dbf08ed031848abf6f971bdbea901a0d3e1532c096835fbc1d85a18a81291e3de954195a52ab3ea2ff01c",
+  "private_key": "e908f86dbb4d55ac876378565aafeabc187f6690f046459397b17d9b9a19688e",
+  "send_asset_type_hash": "0x5caeecbaa73921bc992053948945190f256cf101740f2a839dfcb7b35b8999d3",
+  "send_asset_type_string": "SendAsset(string hyperliquidChain,string destination,string sourceDex,string destinationDex,string token,string amount,string fromSubAccount,uint64 nonce)",
+  "send_multisig_type_hash": "0x850b193262dcd1ccd178e50094ebb5350d6366112c624349b7b8f925b8261911",
+  "send_multisig_type_string": "SendMultiSig(string hyperliquidChain,bytes32 multiSigActionHash,uint64 nonce)",
+  "signer_address": "0xcd49bbac6e85fdeb167eb7ca41a945d2b8758f6f",
+  "spot_send_type_hash": "0x4e18b46f6880718209d75268cf607c5d85666f94e61b30f6fbce9382fc7c074d",
+  "spot_send_type_string": "SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)",
+  "testnet_domain_separator": "0xfeb1393ca4412a4ca577bd51d04f0a77033514c602f4d0a11490fb95f7428df6",
+  "usd_send_encode_type": "HyperliquidTransaction:UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)",
+  "usd_send_nonce": 1690393044548,
+  "usd_send_signature": "0xeca6267bcaadc4c0ae1aed73f5a2c45fcdbb7271f2e9356992404e5d4bad75a3572e08fe93f17755abadb7f84be7d1e9c4ce48bb5633e339bc430c672d5a20ed1b",
+  "usd_send_signing_hash": "0xbc5b897ce4a671ed216244b6cd4e1436b2b7401178f82d35001afd94ee3f9a71",
+  "usd_send_struct_hash": "0x4e25de43985f7dc888a1b5329af941b222b80eb66d672e48a0b53d605fa5e671",
+  "usd_send_type_hash": "0x5dc95b6aaf87009ca33f04c6f253abdf4645519366990eddce8098f1b873a5a4",
+  "usd_send_type_string": "UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)"
+}
+
+
