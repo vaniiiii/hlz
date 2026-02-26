@@ -14,23 +14,49 @@ pub const Style = struct {
     pub const RESET = Style{};
 };
 
-pub const Color = enum(u8) {
-    default = 0,
-    black = 30,
-    red = 31,
-    green = 32,
-    yellow = 33,
-    blue = 34,
-    magenta = 35,
-    cyan = 36,
-    white = 37,
-    bright_red = 91,
-    bright_green = 92,
-    bright_yellow = 93,
-    bright_blue = 94,
-    bright_cyan = 96,
-    bright_white = 97,
-    grey = 90,
+pub const Color = union(enum) {
+    default,
+    basic: u8,
+    rgb: [3]u8,
+
+    // Basic ANSI colors
+    pub const black = Color{ .basic = 30 };
+    pub const red = Color{ .basic = 31 };
+    pub const green = Color{ .basic = 32 };
+    pub const yellow = Color{ .basic = 33 };
+    pub const blue = Color{ .basic = 34 };
+    pub const magenta = Color{ .basic = 35 };
+    pub const cyan = Color{ .basic = 36 };
+    pub const white = Color{ .basic = 37 };
+    pub const bright_red = Color{ .basic = 91 };
+    pub const bright_green = Color{ .basic = 92 };
+    pub const bright_yellow = Color{ .basic = 93 };
+    pub const bright_blue = Color{ .basic = 94 };
+    pub const bright_cyan = Color{ .basic = 96 };
+    pub const bright_white = Color{ .basic = 97 };
+    pub const grey = Color{ .basic = 90 };
+
+    pub fn hex(comptime code: u24) Color {
+        return .{ .rgb = .{
+            @intCast((code >> 16) & 0xFF),
+            @intCast((code >> 8) & 0xFF),
+            @intCast(code & 0xFF),
+        } };
+    }
+
+    pub fn eql(a: Color, b: Color) bool {
+        return switch (a) {
+            .default => b == .default,
+            .basic => |av| switch (b) {
+                .basic => |bv| av == bv,
+                else => false,
+            },
+            .rgb => |av| switch (b) {
+                .rgb => |bv| av[0] == bv[0] and av[1] == bv[1] and av[2] == bv[2],
+                else => false,
+            },
+        };
+    }
 };
 
 pub const Cell = struct {
@@ -50,7 +76,7 @@ pub const Cell = struct {
 
     pub fn eql(a: Cell, b: Cell) bool {
         return std.mem.eql(u8, &a.char, &b.char) and a.char_len == b.char_len and
-            a.style.fg == b.style.fg and a.style.bg == b.style.bg and
+            a.style.fg.eql(b.style.fg) and a.style.bg.eql(b.style.bg) and
             a.style.bold == b.style.bold and a.style.dim == b.style.dim;
     }
 };
@@ -107,6 +133,18 @@ cells: []Cell,
 width: u16,
 height: u16,
 allocator: std.mem.Allocator,
+
+// Render stats (updated by flush)
+pub const Stats = struct {
+    cells_scanned: u32 = 0,
+    cells_changed: u32 = 0,
+    cursor_moves: u32 = 0,
+    style_emits: u32 = 0,
+    style_elides: u32 = 0,
+    write_bytes: u32 = 0,
+    flush_ns: u64 = 0,
+};
+pub var stats: Stats = .{};
 
 pub fn init(allocator: std.mem.Allocator, width: u16, height: u16) !Buffer {
     const size = @as(usize, width) * @as(usize, height);
@@ -300,88 +338,145 @@ fn putUtf8(self: *Buffer, x: u16, y: u16, bytes: []const u8, style: Style) void 
     cell.style = style;
 }
 
-/// Flush: diff `self` against `prev`, emit ANSI escape sequences for changed cells.
-pub fn flush(self: *const Buffer, prev: *const Buffer) void {
-    const stdout = std.fs.File.stdout();
-    // Use a large static buffer to batch writes
-    var out_buf: [65536]u8 = undefined;
-    var pos: usize = 0;
+/// Emit a single color SGR sequence. Returns new pos.
+fn emitColor(buf: []u8, pos_in: usize, color: Color, is_bg: bool) usize {
+    var pos = pos_in;
+    switch (color) {
+        .default => {
+            // Reset fg or bg to default
+            const code: u8 = if (is_bg) 49 else 39;
+            const seq = std.fmt.bufPrint(buf[pos..], "\x1b[{d}m", .{code}) catch return pos;
+            pos += seq.len;
+        },
+        .basic => |code| {
+            const actual = if (is_bg) code + 10 else code;
+            const seq = std.fmt.bufPrint(buf[pos..], "\x1b[{d}m", .{actual}) catch return pos;
+            pos += seq.len;
+        },
+        .rgb => |c| {
+            const prefix: u8 = if (is_bg) 48 else 38;
+            const seq = std.fmt.bufPrint(buf[pos..], "\x1b[{d};2;{d};{d};{d}m", .{ prefix, c[0], c[1], c[2] }) catch return pos;
+            pos += seq.len;
+        },
+    }
+    return pos;
+}
 
-    var last_style = Style{};
-    var last_x: u16 = 0xFFFF;
-    var last_y: u16 = 0xFFFF;
+// Begin Synchronized Update (BSU) — prevents tearing in supported terminals
+const BSU = "\x1b[?2026h";
+const ESU = "\x1b[?2026l";
+
+pub fn flush(self: *const Buffer, prev: *const Buffer) void {
+    const t0 = std.time.nanoTimestamp();
+    const stdout = std.fs.File.stdout();
+    var out_buf: [131072]u8 = undefined;
+    var pos: usize = 0;
+    var s_scanned: u32 = 0;
+    var s_changed: u32 = 0;
+    var s_moves: u32 = 0;
+    var s_emits: u32 = 0;
+    var s_elides: u32 = 0;
+
+    @memcpy(out_buf[pos..][0..BSU.len], BSU);
+    pos += BSU.len;
+
+    var cur_fg: Color = .default;
+    var cur_bg: Color = .default;
+    var cur_bold: bool = false;
+    var cur_dim: bool = false;
+    var cur_x: u16 = 0xFFFF;
+    var cur_y: u16 = 0xFFFF;
+
+    const same_size = prev.width == self.width and prev.height == self.height;
 
     var y: u16 = 0;
     while (y < self.height) : (y += 1) {
         var x: u16 = 0;
         while (x < self.width) : (x += 1) {
             const cur = self.getConst(x, y);
-            const prv = if (prev.width == self.width and prev.height == self.height)
-                prev.getConst(x, y)
-            else
-                Cell{};
+            const prv = if (same_size) prev.getConst(x, y) else Cell{};
+            s_scanned += 1;
+            if (cur.eql(prv)) { s_elides += 1; continue; }
+            s_changed += 1;
 
-            if (cur.eql(prv)) continue;
-
-            // Move cursor if needed
-            if (x != last_x +% 1 or y != last_y) {
-                const move_seq = std.fmt.bufPrint(out_buf[pos..], "\x1b[{d};{d}H", .{ y + 1, x + 1 }) catch break;
-                pos += move_seq.len;
+            // ── Cursor movement (absolute CUP — safe, no desync) ──
+            if (y != cur_y or x != cur_x) {
+                s_moves += 1;
+                const seq = std.fmt.bufPrint(out_buf[pos..], "\x1b[{d};{d}H", .{ y + 1, x + 1 }) catch break;
+                pos += seq.len;
             }
 
-            // Style changes
-            if (cur.style.fg != last_style.fg or cur.style.bg != last_style.bg or
-                cur.style.bold != last_style.bold or cur.style.dim != last_style.dim)
-            {
-                // Reset then set
-                const reset = "\x1b[0m";
-                if (pos + reset.len <= out_buf.len) {
-                    @memcpy(out_buf[pos..][0..reset.len], reset);
-                    pos += reset.len;
-                }
-                if (cur.style.bold) {
-                    const bold = "\x1b[1m";
-                    if (pos + bold.len <= out_buf.len) { @memcpy(out_buf[pos..][0..bold.len], bold); pos += bold.len; }
-                }
-                if (cur.style.dim) {
-                    const dim = "\x1b[2m";
-                    if (pos + dim.len <= out_buf.len) { @memcpy(out_buf[pos..][0..dim.len], dim); pos += dim.len; }
-                }
-                if (cur.style.fg != .default) {
-                    const fg_seq = std.fmt.bufPrint(out_buf[pos..], "\x1b[{d}m", .{@intFromEnum(cur.style.fg)}) catch break;
-                    pos += fg_seq.len;
-                }
-                if (cur.style.bg != .default) {
-                    const bg_seq = std.fmt.bufPrint(out_buf[pos..], "\x1b[{d}m", .{@intFromEnum(cur.style.bg) + 10}) catch break;
-                    pos += bg_seq.len;
-                }
-                last_style = cur.style;
+            // ── Incremental style (only emit what changed) ──
+            const s = cur.style;
+            // Bold/dim changes — may need reset if turning OFF
+            if ((cur_bold and !s.bold) or (cur_dim and !s.dim)) {
+                // Must reset then re-apply what's still on
+                const rst = "\x1b[0m";
+                @memcpy(out_buf[pos..][0..rst.len], rst);
+                pos += rst.len;
+                cur_bold = false;
+                cur_dim = false;
+                cur_fg = .default;
+                cur_bg = .default;
+            }
+            if (s.bold and !cur_bold) {
+                const b = "\x1b[1m";
+                @memcpy(out_buf[pos..][0..b.len], b);
+                pos += b.len;
+                cur_bold = true;
+            }
+            if (s.dim and !cur_dim) {
+                const d = "\x1b[2m";
+                @memcpy(out_buf[pos..][0..d.len], d);
+                pos += d.len;
+                cur_dim = true;
+            }
+            if (!s.fg.eql(cur_fg)) {
+                pos = emitColor(&out_buf, pos, s.fg, false);
+                cur_fg = s.fg;
+                s_emits += 1;
+            } else { s_elides += 1; }
+            if (!s.bg.eql(cur_bg)) {
+                pos = emitColor(&out_buf, pos, s.bg, true);
+                cur_bg = s.bg;
+                s_emits += 1;
+            } else { s_elides += 1; }
+
+            // ── Character ──
+            const ch = cur.char[0..cur.char_len];
+            if (pos + ch.len <= out_buf.len) {
+                @memcpy(out_buf[pos..][0..ch.len], ch);
+                pos += ch.len;
             }
 
-            // Character
-            const ch_slice = cur.char[0..cur.char_len];
-            if (pos + ch_slice.len <= out_buf.len) {
-                @memcpy(out_buf[pos..][0..ch_slice.len], ch_slice);
-                pos += ch_slice.len;
-            }
+            cur_x = x + 1; // cursor advances to next column after write
+            cur_y = y;
 
-            last_x = x;
-            last_y = y;
-
-            // Flush if buffer is getting full
-            if (pos > out_buf.len - 256) {
+            // Flush if buffer getting full
+            if (pos > out_buf.len - 512) {
                 stdout.writeAll(out_buf[0..pos]) catch {};
                 pos = 0;
             }
         }
     }
 
-    // Reset style at end
-    const final_reset = "\x1b[0m";
-    if (pos + final_reset.len <= out_buf.len) {
-        @memcpy(out_buf[pos..][0..final_reset.len], final_reset);
-        pos += final_reset.len;
+    // Reset + end synchronized update
+    const tail = "\x1b[0m" ++ ESU;
+    if (pos + tail.len <= out_buf.len) {
+        @memcpy(out_buf[pos..][0..tail.len], tail);
+        pos += tail.len;
     }
 
     if (pos > 0) stdout.writeAll(out_buf[0..pos]) catch {};
+
+    const t1 = std.time.nanoTimestamp();
+    stats = .{
+        .cells_scanned = s_scanned,
+        .cells_changed = s_changed,
+        .cursor_moves = s_moves,
+        .style_emits = s_emits,
+        .style_elides = s_elides,
+        .write_bytes = @intCast(pos),
+        .flush_ns = @intCast(t1 - t0),
+    };
 }

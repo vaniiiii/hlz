@@ -40,9 +40,9 @@ pub fn init() !Terminal {
     raw.iflag.IXON = false;
     // Disable output processing
     raw.oflag.OPOST = false;
-    // Read returns after 1 byte, with 100ms timeout
+    // Non-blocking: return immediately with 0 bytes if nothing available
     raw.cc[@intFromEnum(posix.V.MIN)] = 0;
-    raw.cc[@intFromEnum(posix.V.TIME)] = 1;
+    raw.cc[@intFromEnum(posix.V.TIME)] = 0;
 
     try posix.tcsetattr(fd, .FLUSH, raw);
 
@@ -123,30 +123,75 @@ pub const Key = union(enum) {
     unknown,
 };
 
-/// Non-blocking key read. Returns null if no key available.
-pub fn pollKey() ?Key {
-    var buf: [8]u8 = undefined;
-    const n = std.posix.read(std.fs.File.stdin().handle, &buf) catch return null;
-    if (n == 0) return null;
+// Input byte ring buffer — survives across pollKey() calls
+var ring: [64]u8 = undefined;
+var ring_r: usize = 0;
+var ring_w: usize = 0;
 
-    if (buf[0] == 0x1b) {
-        if (n == 1) return .esc;
-        if (n >= 3 and buf[1] == '[') {
-            return switch (buf[2]) {
-                'A' => .up,
-                'B' => .down,
-                'C' => .right,
-                'D' => .left,
-                else => .unknown,
-            };
+fn ringLen() usize {
+    return ring_w -% ring_r;
+}
+
+fn ringPush(data: []const u8) void {
+    for (data) |b| {
+        if (ringLen() >= ring.len) return; // full, drop
+        ring[ring_w % ring.len] = b;
+        ring_w +%= 1;
+    }
+}
+
+fn ringPeek(offset: usize) ?u8 {
+    if (offset >= ringLen()) return null;
+    return ring[(ring_r +% offset) % ring.len];
+}
+
+fn ringConsume(n: usize) void {
+    ring_r +%= n;
+}
+
+/// Non-blocking key read with proper escape sequence handling.
+pub fn pollKey() ?Key {
+    // Fill ring from stdin (non-blocking)
+    var tmp: [32]u8 = undefined;
+    const n = std.posix.read(std.fs.File.stdin().handle, &tmp) catch 0;
+    if (n > 0) ringPush(tmp[0..n]);
+
+    if (ringLen() == 0) return null;
+
+    const b0 = ringPeek(0).?;
+
+    if (b0 == 0x1b) {
+        // ESC — could be escape key or start of CSI sequence
+        if (ringLen() >= 3) {
+            if (ringPeek(1).? == '[') {
+                const b2 = ringPeek(2).?;
+                const key: Key = switch (b2) {
+                    'A' => .up,
+                    'B' => .down,
+                    'C' => .right,
+                    'D' => .left,
+                    'H' => .{ .char = '0' }, // Home
+                    'F' => .{ .char = '$' }, // End
+                    else => .unknown,
+                };
+                ringConsume(3);
+                return key;
+            }
         }
+        if (ringLen() >= 2 and ringPeek(1).? == '[') {
+            // Have ESC+[ but missing final byte — wait for more data
+            return null;
+        }
+        // Lone ESC with no [ following — real Esc key
+        ringConsume(1);
         return .esc;
     }
 
-    return switch (buf[0]) {
+    ringConsume(1);
+    return switch (b0) {
         '\r', '\n' => .enter,
         '\t' => .tab,
         127 => .backspace,
-        else => .{ .char = buf[0] },
+        else => .{ .char = b0 },
     };
 }
