@@ -1,0 +1,17 @@
+.{
+    .name = .hyperzig,
+    .version = "0.1.0",
+    .fingerprint = 0xba95a5e761204227,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .websocket = .{
+            .url = "git+https://github.com/karlseguin/websocket.zig#97fefafa59cc78ce177cff540b8685cd7f699276",
+            .hash = "websocket-0.1.0-ZPISdRlzAwBB_Bz2UMMqxYqF6YEVTIBoFsbzwPUJTHIc",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
