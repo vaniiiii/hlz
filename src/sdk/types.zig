@@ -2,8 +2,8 @@
 //! Byte-identical to Rust SDK's rmp-serde output.
 
 const std = @import("std");
-const msgpack = @import("../encoding/msgpack.zig");
-const Decimal = @import("../math/decimal.zig").Decimal;
+const msgpack = @import("../lib/encoding/msgpack.zig");
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 
 /// B128 client order ID, serialized as "0x" + 32 hex chars.
@@ -136,6 +136,16 @@ pub const UpdateIsolatedMargin = struct {
     asset: usize,
     is_buy: bool,
     ntli: u64,
+};
+
+pub const UpdateLeverage = struct {
+    asset: usize,
+    is_cross: bool,
+    leverage: u32,
+};
+
+pub const SetReferrer = struct {
+    code: []const u8,
 };
 
 /// Either a numeric OID or a Cloid.
@@ -306,6 +316,8 @@ pub const ActionTag = enum {
     approveAgent,
     convertToMultiSigUser,
     updateIsolatedMargin,
+    updateLeverage,
+    setReferrer,
     multiSig,
     noop,
 
@@ -323,6 +335,8 @@ pub const ActionTag = enum {
             .approveAgent => "approveAgent",
             .convertToMultiSigUser => "convertToMultiSigUser",
             .updateIsolatedMargin => "updateIsolatedMargin",
+            .updateLeverage => "updateLeverage",
+            .setReferrer => "setReferrer",
             .multiSig => "multiSig",
             .noop => "noop",
         };
@@ -437,6 +451,28 @@ pub fn packActionUpdateIsolatedMargin(p: *msgpack.Packer, uim: UpdateIsolatedMar
     try p.packBool(uim.is_buy);
     try p.packStr("ntli");
     try p.packUint(uim.ntli);
+}
+
+/// Pack an Action::UpdateLeverage to msgpack (with serde tag).
+pub fn packActionUpdateLeverage(p: *msgpack.Packer, ul: UpdateLeverage) msgpack.PackError!void {
+    try p.packMapHeader(4);
+    try p.packStr("type");
+    try p.packStr(ActionTag.updateLeverage.toString());
+    try p.packStr("asset");
+    try p.packUint(@intCast(ul.asset));
+    try p.packStr("isCross");
+    try p.packBool(ul.is_cross);
+    try p.packStr("leverage");
+    try p.packUint(@intCast(ul.leverage));
+}
+
+/// Pack an Action::SetReferrer to msgpack (with serde tag).
+pub fn packActionSetReferrer(p: *msgpack.Packer, sr: SetReferrer) msgpack.PackError!void {
+    try p.packMapHeader(2);
+    try p.packStr("type");
+    try p.packStr(ActionTag.setReferrer.toString());
+    try p.packStr("code");
+    try p.packStr(sr.code);
 }
 
 /// Pack an Action::EvmUserModify to msgpack (with serde tag).

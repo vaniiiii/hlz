@@ -8,7 +8,7 @@
 
 const std = @import("std");
 const json = @import("json.zig");
-const Decimal = @import("../math/decimal.zig").Decimal;
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 
 pub const ResponseStatus = enum {

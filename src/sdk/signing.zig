@@ -3,9 +3,9 @@
 //! Typed data path: EIP-712 struct hash → sign directly.
 
 const std = @import("std");
-const msgpack = @import("../encoding/msgpack.zig");
-const signer = @import("../crypto/signer.zig");
-const eip712 = @import("../crypto/eip712.zig");
+const msgpack = @import("../lib/encoding/msgpack.zig");
+const signer = @import("../lib/crypto/signer.zig");
+const eip712 = @import("../lib/crypto/eip712.zig");
 const types = @import("types.zig");
 
 const Hash = signer.Hash;
@@ -179,6 +179,36 @@ pub fn signUpdateIsolatedMargin(
     return signRmpAction(s, p.written(), nonce, chain, vault_address, expires_after);
 }
 
+/// Sign an updateLeverage action (RMP path).
+pub fn signUpdateLeverage(
+    s: Signer,
+    ul: types.UpdateLeverage,
+    nonce: u64,
+    chain: Chain,
+    vault_address: ?Address,
+    expires_after: ?u64,
+) SignError!Signature {
+    var buf: [256]u8 = undefined;
+    var p = msgpack.Packer.init(&buf);
+    try types.packActionUpdateLeverage(&p, ul);
+    return signRmpAction(s, p.written(), nonce, chain, vault_address, expires_after);
+}
+
+/// Sign a setReferrer action (RMP path).
+pub fn signSetReferrer(
+    s: Signer,
+    sr: types.SetReferrer,
+    nonce: u64,
+    chain: Chain,
+    vault_address: ?Address,
+    expires_after: ?u64,
+) SignError!Signature {
+    var buf: [256]u8 = undefined;
+    var p = msgpack.Packer.init(&buf);
+    try types.packActionSetReferrer(&p, sr);
+    return signRmpAction(s, p.written(), nonce, chain, vault_address, expires_after);
+}
+
 /// Sign an EVM user modify (RMP path).
 pub fn signEvmUserModify(
     s: Signer,
@@ -269,7 +299,7 @@ pub fn signConvertToMultiSig(
 }
 
 
-const Decimal = @import("../math/decimal.zig").Decimal;
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 test "rmpHashOrder: matches Rust Action::Order rmp_hash" {
     // From rust_vectors.json: action_order_rmp_hash (hash of Action with serde tag)

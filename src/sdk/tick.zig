@@ -2,7 +2,7 @@
 //! 5 significant figures, clamped by market-specific max_decimals.
 
 const std = @import("std");
-const Decimal = @import("../math/decimal.zig").Decimal;
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 pub const Side = enum { Bid, Ask };
 

@@ -6,7 +6,7 @@
 //! - Enum variants (camelCase)
 
 const std = @import("std");
-const Decimal = @import("../math/decimal.zig").Decimal;
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 pub const ParseError = error{
     JsonParseFailed,

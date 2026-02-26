@@ -4,9 +4,9 @@ const std = @import("std");
 const json_mod = @import("json.zig");
 const signing = @import("signing.zig");
 const types = @import("types.zig");
-const signer_mod = @import("../crypto/signer.zig");
-const eip712 = @import("../crypto/eip712.zig");
-const Decimal = @import("../math/decimal.zig").Decimal;
+const signer_mod = @import("../lib/crypto/signer.zig");
+const eip712 = @import("../lib/crypto/eip712.zig");
+const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 const Signer = signer_mod.Signer;
 const Address = signer_mod.Address;
@@ -248,6 +248,32 @@ pub const Client = struct {
         return self.sendExchangeRaw(sig, nonce, uim, .updateIsolatedMargin);
     }
 
+    /// Update leverage for an asset.
+    pub fn updateLeverage(
+        self: *Client,
+        s: Signer,
+        ul: types.UpdateLeverage,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signUpdateLeverage(s, ul, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRaw(sig, nonce, ul, .updateLeverage);
+    }
+
+    /// Set referrer code.
+    pub fn setReferrer(
+        self: *Client,
+        s: Signer,
+        sr: types.SetReferrer,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signSetReferrer(s, sr, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRaw(sig, nonce, sr, .setReferrer);
+    }
+
     /// Toggle big blocks.
     pub fn evmUserModify(
         self: *Client,
@@ -470,6 +496,40 @@ pub const Client = struct {
     pub fn l2Book(self: *Client, coin: []const u8) !InfoResult {
         var buf: [256]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, "{{\"type\":\"l2Book\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch recent trades for a coin.
+    pub fn recentTrades(self: *Client, coin: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, "{{\"type\":\"recentTrades\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch user's active asset data (leverage, available-to-trade).
+    pub fn activeAssetData(self: *Client, user: []const u8, coin: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"activeAssetData","user":"{s}","coin":"{s}"}}
+        , .{ user, coin }) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch referral status for a user.
+    pub fn referral(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"referral","user":"{s}"}}
+        , .{user}) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch spot clearinghouse state for a user.
+    pub fn spotClearinghouseState(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"spotClearinghouseState","user":"{s}"}}
+        , .{user}) catch return error.BufferOverflow;
         return self.infoRequestDyn(body);
     }
 
@@ -715,6 +775,14 @@ fn writeActionJsonTagged(writer: anytype, action_data: anytype, tag: types.Actio
             if (action_data.is_buy) "true" else "false",
             action_data.ntli,
         });
+    } else if (T == types.UpdateLeverage) {
+        try std.fmt.format(writer, ",\"asset\":{d},\"isCross\":{s},\"leverage\":{d}}}", .{
+            action_data.asset,
+            if (action_data.is_cross) "true" else "false",
+            action_data.leverage,
+        });
+    } else if (T == types.SetReferrer) {
+        try std.fmt.format(writer, ",\"code\":\"{s}\"}}", .{action_data.code});
     } else {
         try writer.writeAll("}");
     }
