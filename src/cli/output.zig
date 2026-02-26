@@ -1,7 +1,6 @@
-//! Terminal output formatting for the `hl` CLI.
-//!
-//! Three modes: pretty (colored tables), json (for piping), csv.
-//! Auto-detects TTY — if stdout is piped, defaults to json.
+//! Terminal output — "artifact" theme.
+//! Heavy top border + floating tab title, left accent rail,
+//! pill badges, sparse dot separators. Hyperliquid palette.
 
 const std = @import("std");
 const args_mod = @import("args.zig");
@@ -9,22 +8,30 @@ const Decimal = @import("hyperzig").math.decimal.Decimal;
 
 const OutputFormat = args_mod.OutputFormat;
 
-
 pub const Style = struct {
     pub const reset = "\x1b[0m";
     pub const bold = "\x1b[1m";
     pub const dim = "\x1b[2m";
-    pub const red = "\x1b[31m";
-    pub const green = "\x1b[32m";
-    pub const yellow = "\x1b[33m";
-    pub const blue = "\x1b[34m";
-    pub const magenta = "\x1b[35m";
-    pub const cyan = "\x1b[36m";
-    pub const white = "\x1b[37m";
-    pub const bold_cyan = "\x1b[1;36m";
-    pub const bold_green = "\x1b[1;32m";
-    pub const bold_red = "\x1b[1;31m";
-    pub const bold_yellow = "\x1b[1;33m";
+
+    pub const green = "\x1b[38;2;31;166;125m";
+    pub const red = "\x1b[38;2;237;112;136m";
+    pub const cyan = "\x1b[38;2;80;210;193m";
+    pub const yellow = "\x1b[38;2;245;195;68m";
+    pub const white = "\x1b[38;2;255;255;255m";
+    pub const muted = "\x1b[38;2;100;110;108m";
+    pub const subtle = "\x1b[38;2;60;72;68m";
+
+    pub const bold_green = "\x1b[1m\x1b[38;2;31;166;125m";
+    pub const bold_red = "\x1b[1m\x1b[38;2;237;112;136m";
+    pub const bold_cyan = "\x1b[1m\x1b[38;2;80;210;193m";
+    pub const bold_yellow = "\x1b[1m\x1b[38;2;245;195;68m";
+    pub const bold_white = "\x1b[1m\x1b[38;2;255;255;255m";
+
+    pub const bg_green = "\x1b[48;2;30;93;82m";
+    pub const bg_red = "\x1b[48;2;115;42;54m";
+
+    pub const rail = "\x1b[38;2;80;210;193m\xe2\x96\x90"; // ▐ cyan
+    pub const rail_dim = "\x1b[38;2;39;48;53m\xe2\x96\x90"; // ▐ dim
 };
 
 pub const Writer = struct {
@@ -38,20 +45,15 @@ pub const Writer = struct {
 
     pub fn initAuto(format: OutputFormat, explicit: bool) Writer {
         const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
-        // Auto-detect: if piped and format wasn't explicitly set, use json
         const effective = if (!is_tty and !explicit and format == .pretty) .json else format;
         return .{ .is_tty = is_tty, .format = effective };
     }
 
-    /// Write to stdout, replacing \n with \r\n when on a TTY.
-    /// This ensures correct rendering even when OPOST is disabled
-    /// (e.g. after a TUI session or in certain terminal states).
     fn out(self: *Writer, data: []const u8) !void {
         if (!self.is_tty) {
             std.fs.File.stdout().writeAll(data) catch return error.BrokenPipe;
             return;
         }
-        // Scan for \n and emit \r\n
         const stdout = std.fs.File.stdout();
         var start: usize = 0;
         for (data, 0..) |byte, i| {
@@ -67,8 +69,6 @@ pub const Writer = struct {
     fn ew(_: *Writer, data: []const u8) !void {
         std.fs.File.stderr().writeAll(data) catch return error.BrokenPipe;
     }
-
-    // ── Styled output (only when TTY) ─────────────────────────
 
     pub fn style(self: *Writer, s: []const u8) !void {
         if (self.is_tty) try self.out(s);
@@ -90,69 +90,92 @@ pub const Writer = struct {
         try self.out("\n");
     }
 
-    // ── Table rendering ───────────────────────────────────────
+    // ── Panel ─────────────────────────────────────────────────
 
     pub fn heading(self: *Writer, title: []const u8) !void {
         if (self.format != .pretty) return;
+        try self.style(Style.subtle);
+        try self.out("  \xe2\x94\x81\xe2\x94\x81\xe2\x94\x81"); // ━━━
+        try self.style(Style.reset);
         try self.style(Style.bold_cyan);
-        try self.out("\xe2\x95\xad\xe2\x94\x80 "); // ╭─
+        try self.out("\xe2\x94\xab "); // ┫
         try self.out(title);
-        try self.out(" ");
-        const title_len = title.len + 4;
-        if (title_len < 60) {
-            var i: usize = title_len;
-            while (i < 60) : (i += 1) try self.out("\xe2\x94\x80"); // ─
-        }
-        try self.out("\xe2\x95\xae"); // ╮
+        try self.out(" \xe2\x94\xa3"); // ┣
+        try self.style(Style.reset);
+        try self.style(Style.subtle);
+        var i: usize = 8 + title.len;
+        while (i < 68) : (i += 1) try self.out("\xe2\x94\x81"); // ━
         try self.style(Style.reset);
         try self.out("\n");
     }
 
     pub fn footer(self: *Writer) !void {
         if (self.format != .pretty) return;
-        try self.style(Style.dim);
-        try self.out("\xe2\x95\xb0"); // ╰
+        try self.out("\n");
+    }
+
+    pub fn panelSep(self: *Writer) !void {
+        if (self.format != .pretty) return;
+        try self.style(Style.subtle);
+        try self.out("  ");
         var i: usize = 0;
-        while (i < 60) : (i += 1) try self.out("\xe2\x94\x80"); // ─
-        try self.out("\xe2\x95\xaf"); // ╯
+        while (i < 34) : (i += 1) try self.out("\xc2\xb7 ");
         try self.style(Style.reset);
         try self.out("\n");
     }
 
+    fn emitRail(self: *Writer, bright: bool) !void {
+        if (self.is_tty) {
+            try self.out("  ");
+            try self.out(if (bright) Style.rail else Style.rail_dim);
+            try self.out(Style.reset);
+        } else {
+            try self.out("  ");
+        }
+        try self.out(" ");
+    }
+
     pub fn tableRow(self: *Writer, columns: []const Column) !void {
         if (self.format == .json) return;
-        try self.out("\xe2\x94\x82 "); // │
+        try self.emitRail(false);
         for (columns) |col| {
-            if (col.color) |c| {
-                if (self.is_tty) try self.out(c);
-            }
+            if (col.color) |c| try self.style(c);
             try self.padWrite(col.text, col.width, col.align_right);
-            if (col.color != null) {
-                if (self.is_tty) try self.out(Style.reset);
-            }
-            try self.out("  ");
+            if (col.color != null) try self.style(Style.reset);
+            try self.out(" ");
         }
         try self.out("\n");
     }
 
     pub fn tableHeader(self: *Writer, columns: []const Column) !void {
         if (self.format != .pretty) return;
-        if (self.is_tty) {
-            try self.out(Style.bold);
-            try self.out(Style.dim);
-        }
-        try self.out("\xe2\x94\x82 "); // │
+        try self.emitRail(true);
+        try self.style(Style.muted);
         for (columns) |col| {
             try self.padWrite(col.text, col.width, col.align_right);
-            try self.out("  ");
+            try self.out(" ");
         }
-        if (self.is_tty) try self.out(Style.reset);
+        try self.style(Style.reset);
         try self.out("\n");
     }
 
     fn padWrite(self: *Writer, text: []const u8, width: usize, right: bool) !void {
-        const display_len = displayWidth(text);
-        const pad = if (width > display_len) width - display_len else 0;
+        const dw = displayWidth(text);
+        if (dw > width) {
+            var cols: usize = 0;
+            var i: usize = 0;
+            while (i < text.len and cols < width) {
+                const byte = text[i];
+                const clen: usize = if (byte < 0x80) 1 else if (byte < 0xE0) 2 else if (byte < 0xF0) 3 else 4;
+                if (cols + 1 > width) break;
+                const end = @min(i + clen, text.len);
+                try self.out(text[i..end]);
+                i = end;
+                cols += 1;
+            }
+            return;
+        }
+        const pad = width - dw;
         if (right) {
             var i: usize = 0;
             while (i < pad) : (i += 1) try self.out(" ");
@@ -164,7 +187,36 @@ pub const Writer = struct {
         }
     }
 
-    // ── Pagination footer ─────────────────────────────────────
+    // ── Visual elements ───────────────────────────────────────
+
+    pub fn bar(self: *Writer, value: f64, max_val: f64, max_width: usize, color: []const u8) !void {
+        if (!self.is_tty or max_val <= 0) return;
+        const ratio = @min(1.0, @max(0.0, value / max_val));
+        const fill_f = ratio * @as(f64, @floatFromInt(max_width));
+        const full: usize = @intFromFloat(fill_f);
+        const frac = fill_f - @as(f64, @floatFromInt(full));
+        try self.out(color);
+        var i: usize = 0;
+        while (i < full) : (i += 1) try self.out("\xe2\x96\x88");
+        if (full < max_width) {
+            const blocks = [_][]const u8{ " ", "\xe2\x96\x8f", "\xe2\x96\x8e", "\xe2\x96\x8d", "\xe2\x96\x8c", "\xe2\x96\x8b", "\xe2\x96\x8a", "\xe2\x96\x89" };
+            try self.out(blocks[@intFromFloat(frac * 7.0)]);
+            i = full + 1;
+            while (i < max_width) : (i += 1) try self.out(" ");
+        }
+        try self.out(Style.reset);
+    }
+
+    pub fn kv(self: *Writer, label: []const u8, value: []const u8) !void {
+        try self.emitRail(false);
+        try self.style(Style.muted);
+        try self.padWrite(label, 14, false);
+        try self.style(Style.reset);
+        try self.styled(Style.bold_white, value);
+        try self.out("\n");
+    }
+
+    // ── Pagination ────────────────────────────────────────────
 
     pub fn paginate(self: *Writer, shown: usize, total: usize) !void {
         return self.paginatePage(shown, total, 0, 0);
@@ -172,40 +224,34 @@ pub const Writer = struct {
 
     pub fn paginatePage(self: *Writer, shown: usize, total: usize, page: usize, pages: usize) !void {
         if (self.format != .pretty) return;
-        try self.style(Style.dim);
+        try self.style(Style.muted);
         var buf: [96]u8 = undefined;
         const s = if (page > 0 and pages > 1)
-            std.fmt.bufPrint(&buf, "\xe2\x94\x82 Showing {d}/{d} \xe2\x80\xa2 page {d}/{d} \xe2\x80\xa2 --page N | --all", .{ shown, total, page, pages }) catch return
+            std.fmt.bufPrint(&buf, "  {d}/{d} \xc2\xb7 page {d}/{d} \xc2\xb7 --page N | --all", .{ shown, total, page, pages }) catch return
         else
-            std.fmt.bufPrint(&buf, "\xe2\x94\x82 Showing {d}/{d} \xe2\x80\xa2 --page N | --all", .{ shown, total }) catch return;
+            std.fmt.bufPrint(&buf, "  {d}/{d} \xc2\xb7 --page N | --all", .{ shown, total }) catch return;
         try self.out(s);
         try self.style(Style.reset);
         try self.out("\n");
     }
-
-    // ── PnL coloring ──────────────────────────────────────────
 
     pub fn pnlColor(d: ?Decimal) ?[]const u8 {
         if (d) |val| {
             if (val.isNegative()) return Style.bold_red;
             if (val.mantissa != 0) return Style.bold_green;
         }
-        return Style.dim;
+        return Style.muted;
     }
-
-    // ── JSON output helpers ───────────────────────────────────
 
     pub fn jsonRaw(self: *Writer, body: []const u8) !void {
         try self.out(body);
         try self.out("\n");
     }
 
-    // ── Error/success messages ────────────────────────────────
-
     pub fn err(self: *Writer, msg: []const u8) !void {
         if (self.is_tty) {
             try self.ew(Style.bold_red);
-            try self.ew("error: ");
+            try self.ew("\xe2\x9c\x97 ");
             try self.ew(Style.reset);
         } else {
             try self.ew("error: ");
@@ -217,7 +263,7 @@ pub const Writer = struct {
     pub fn errFmt(self: *Writer, comptime fmt: []const u8, a: anytype) !void {
         if (self.is_tty) {
             try self.ew(Style.bold_red);
-            try self.ew("error: ");
+            try self.ew("\xe2\x9c\x97 ");
             try self.ew(Style.reset);
         } else {
             try self.ew("error: ");
@@ -231,7 +277,7 @@ pub const Writer = struct {
     pub fn success(self: *Writer, msg: []const u8) !void {
         if (self.is_tty) {
             try self.out(Style.bold_green);
-            try self.out("\xe2\x9c\x93 "); // ✓
+            try self.out("\xe2\x9c\x93 ");
             try self.out(Style.reset);
         }
         try self.out(msg);
@@ -239,21 +285,11 @@ pub const Writer = struct {
     }
 };
 
-/// Count display columns (not bytes). Each UTF-8 codepoint = 1 column.
 pub fn displayWidth(text: []const u8) usize {
     var cols: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
-        const byte = text[i];
-        if (byte < 0x80) {
-            i += 1;
-        } else if (byte < 0xE0) {
-            i += 2;
-        } else if (byte < 0xF0) {
-            i += 3;
-        } else {
-            i += 4;
-        }
+        if (text[i] < 0x80) i += 1 else if (text[i] < 0xE0) i += 2 else if (text[i] < 0xF0) i += 3 else i += 4;
         cols += 1;
     }
     return cols;
