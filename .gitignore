@@ -2,6 +2,10 @@
 zig-cache/
 zig-out/
 ratatui/
+binsider/
+reference
+tui_demo
+.env
 .DS_Store
 *.swp
 *~
