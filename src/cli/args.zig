@@ -24,6 +24,13 @@ pub const Command = union(enum) {
     funding: FundingArgs,
     book: BookArgs,
     markets: void,
+    trade: TradeArgs,
+    leverage: LeverageArgs,
+    price: PriceArgs,
+    portfolio: UserQuery,
+    referral: ReferralArgs,
+    twap: TwapArgs,
+    batch: BatchArgs,
     config: void,
     help: void,
     version: void,
@@ -39,6 +46,7 @@ pub const MidsArgs = struct {
 pub const UserQuery = struct {
     address: ?[]const u8 = null,
     dex: ?[]const u8 = null,
+    all_dexes: bool = false,
 };
 
 pub const MarketArgs = struct {
@@ -55,6 +63,12 @@ pub const OrderArgs = struct {
     slippage: ?[]const u8 = null, // for market orders: max slippage price
     reduce_only: bool = false,
     tif: []const u8 = "gtc",
+    // Trigger orders
+    trigger_px: ?[]const u8 = null, // --trigger-above or --trigger-below
+    trigger_is_tp: bool = true, // true = take-profit, false = stop-loss
+    // Bracket: attach TP/SL to a limit order
+    tp: ?[]const u8 = null, // --tp <price>
+    sl: ?[]const u8 = null, // --sl <price>
 };
 
 pub const CancelArgs = struct {
@@ -109,10 +123,45 @@ pub const FundingArgs = struct {
     filter: ?[]const u8 = null,
 };
 
+pub const TradeArgs = struct {
+    coin: []const u8 = "BTC",
+};
+
 pub const BookArgs = struct {
     coin: []const u8,
     depth: usize = 15,
     live: bool = false,
+};
+
+pub const LeverageArgs = struct {
+    coin: []const u8,
+    leverage: ?[]const u8 = null, // null = query only
+    cross: bool = true, // --isolated flips to false
+};
+
+pub const PriceArgs = struct {
+    coin: []const u8,
+};
+
+pub const ReferralArgs = struct {
+    action: ReferralAction = .status,
+    code: ?[]const u8 = null,
+};
+
+pub const ReferralAction = enum { status, set };
+
+pub const TwapArgs = struct {
+    coin: []const u8,
+    side: []const u8, // "buy" or "sell"
+    size: []const u8,
+    duration: []const u8 = "1h", // 5m, 15m, 1h, 4h, etc.
+    slices: usize = 10,
+    slippage_pct: f64 = 1.0, // max slippage per slice (%)
+};
+
+pub const BatchArgs = struct {
+    orders: [16]?[]const u8 = .{null} ** 16,
+    count: usize = 0,
 };
 
 pub const GlobalFlags = struct {
@@ -201,9 +250,9 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         .{ .spot = parseMarket(rest) }
     else if (std.mem.eql(u8, cmd_str, "dexes") or std.mem.eql(u8, cmd_str, "dex"))
         .{ .dexes = {} }
-    else if (std.mem.eql(u8, cmd_str, "buy"))
+    else if (std.mem.eql(u8, cmd_str, "buy") or std.mem.eql(u8, cmd_str, "long"))
         .{ .buy = parseOrder(rest) orelse return error.MissingArgument }
-    else if (std.mem.eql(u8, cmd_str, "sell"))
+    else if (std.mem.eql(u8, cmd_str, "sell") or std.mem.eql(u8, cmd_str, "short"))
         .{ .sell = parseOrder(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "cancel"))
         .{ .cancel = parseCancel(rest) }
@@ -221,6 +270,20 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         .{ .markets = {} }
     else if (std.mem.eql(u8, cmd_str, "book") or std.mem.eql(u8, cmd_str, "ob"))
         .{ .book = parseBook(rest) orelse return error.MissingArgument }
+    else if (std.mem.eql(u8, cmd_str, "trade") or std.mem.eql(u8, cmd_str, "t"))
+        .{ .trade = parseTrade(rest) }
+    else if (std.mem.eql(u8, cmd_str, "leverage") or std.mem.eql(u8, cmd_str, "lev"))
+        .{ .leverage = parseLeverage(rest) orelse return error.MissingArgument }
+    else if (std.mem.eql(u8, cmd_str, "price"))
+        .{ .price = if (rest.len > 0) .{ .coin = rest[0] } else return error.MissingArgument }
+    else if (std.mem.eql(u8, cmd_str, "portfolio") or std.mem.eql(u8, cmd_str, "folio"))
+        .{ .portfolio = parseUserQuery(rest) }
+    else if (std.mem.eql(u8, cmd_str, "referral"))
+        .{ .referral = parseReferral(rest) }
+    else if (std.mem.eql(u8, cmd_str, "twap"))
+        .{ .twap = parseTwap(rest) orelse return error.MissingArgument }
+    else if (std.mem.eql(u8, cmd_str, "batch"))
+        .{ .batch = parseBatch(rest) }
     else if (std.mem.eql(u8, cmd_str, "config"))
         .{ .config = {} }
     else if (std.mem.eql(u8, cmd_str, "help") or std.mem.eql(u8, cmd_str, "--help") or std.mem.eql(u8, cmd_str, "-h"))
@@ -281,6 +344,8 @@ fn parseUserQuery(args: []const []const u8) UserQuery {
         if (std.mem.eql(u8, args[i], "--dex") and i + 1 < args.len) {
             i += 1;
             result.dex = args[i];
+        } else if (std.mem.eql(u8, args[i], "--all-dexes")) {
+            result.all_dexes = true;
         } else {
             result.address = args[i];
         }
@@ -308,6 +373,20 @@ fn parseOrder(args: []const []const u8) ?OrderArgs {
         } else if (std.mem.eql(u8, a, "--slippage") and i + 1 < args.len) {
             i += 1;
             result.slippage = args[i];
+        } else if (std.mem.eql(u8, a, "--trigger-above") and i + 1 < args.len) {
+            i += 1;
+            result.trigger_px = args[i];
+            result.trigger_is_tp = true;
+        } else if (std.mem.eql(u8, a, "--trigger-below") and i + 1 < args.len) {
+            i += 1;
+            result.trigger_px = args[i];
+            result.trigger_is_tp = false;
+        } else if (std.mem.eql(u8, a, "--tp") and i + 1 < args.len) {
+            i += 1;
+            result.tp = args[i];
+        } else if (std.mem.eql(u8, a, "--sl") and i + 1 < args.len) {
+            i += 1;
+            result.sl = args[i];
         } else {
             // Might be price without @
             result.price = a;
@@ -371,6 +450,14 @@ fn parseFunding(args: []const []const u8) FundingArgs {
     return result;
 }
 
+fn parseTrade(args: []const []const u8) TradeArgs {
+    var result = TradeArgs{};
+    if (args.len >= 1 and args[0].len > 0 and args[0][0] != '-') {
+        result.coin = args[0];
+    }
+    return result;
+}
+
 fn parseBook(args: []const []const u8) ?BookArgs {
     if (args.len < 1) return null;
     var result = BookArgs{ .coin = args[0] };
@@ -421,6 +508,76 @@ fn parseSend(args: []const []const u8) ?SendArgs {
             result.subaccount = args[i];
         } else if (result.destination == null) {
             result.destination = a;
+        }
+    }
+    return result;
+}
+
+// leverage BTC 10 --isolated  or  leverage BTC (query)
+fn parseLeverage(args: []const []const u8) ?LeverageArgs {
+    if (args.len < 1) return null;
+    var result = LeverageArgs{ .coin = args[0] };
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--isolated")) {
+            result.cross = false;
+        } else if (std.mem.eql(u8, a, "--cross")) {
+            result.cross = true;
+        } else if (!std.mem.startsWith(u8, a, "--")) {
+            result.leverage = a;
+        }
+    }
+    return result;
+}
+
+fn parseReferral(args: []const []const u8) ReferralArgs {
+    var result = ReferralArgs{};
+    if (args.len >= 2 and std.mem.eql(u8, args[0], "set")) {
+        result.action = .set;
+        result.code = args[1];
+    } else if (args.len >= 1 and std.mem.eql(u8, args[0], "status")) {
+        result.action = .status;
+    } else if (args.len >= 1 and !std.mem.startsWith(u8, args[0], "--")) {
+        // `hl referral MYCODE` = shorthand for set
+        result.action = .set;
+        result.code = args[0];
+    }
+    return result;
+}
+
+// twap BTC buy 10.0 --duration 1h --slices 12
+fn parseTwap(args: []const []const u8) ?TwapArgs {
+    if (args.len < 3) return null;
+    var result = TwapArgs{
+        .coin = args[0],
+        .side = args[1],
+        .size = args[2],
+    };
+    var i: usize = 3;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--duration") and i + 1 < args.len) {
+            i += 1;
+            result.duration = args[i];
+        } else if (std.mem.eql(u8, a, "--slices") and i + 1 < args.len) {
+            i += 1;
+            result.slices = std.fmt.parseInt(usize, args[i], 10) catch 10;
+        } else if (std.mem.eql(u8, a, "--slippage") and i + 1 < args.len) {
+            i += 1;
+            result.slippage_pct = std.fmt.parseFloat(f64, args[i]) catch 1.0;
+        }
+    }
+    return result;
+}
+
+// batch "buy BTC 0.1 @98000" "sell ETH 1.0 @3400"
+fn parseBatch(args: []const []const u8) BatchArgs {
+    var result = BatchArgs{};
+    for (args) |a| {
+        if (result.count < 16) {
+            result.orders[result.count] = a;
+            result.count += 1;
         }
     }
     return result;

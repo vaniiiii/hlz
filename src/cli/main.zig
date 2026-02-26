@@ -5,6 +5,7 @@ const args_mod = @import("args.zig");
 const config_mod = @import("config.zig");
 const output_mod = @import("output.zig");
 const commands = @import("commands.zig");
+const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
 const VERSION = "0.2.0";
@@ -56,6 +57,17 @@ pub fn main() !void {
         .funding => |a| commands.funding(allocator, &w, config, a) catch |e| return fail(&w, "funding", e),
         .book => |a| commands.book(allocator, &w, config, a) catch |e| return fail(&w, "book", e),
         .markets => commands.markets(allocator, config) catch |e| return fail(&w, "markets", e),
+        .leverage => |a| commands.setLeverage(allocator, &w, config, a) catch |e| return fail(&w, "leverage", e),
+        .price => |a| commands.price(allocator, &w, config, a) catch |e| return fail(&w, "price", e),
+        .portfolio => |a| commands.portfolio(allocator, &w, config, a) catch |e| return fail(&w, "portfolio", e),
+        .referral => |a| commands.referralCmd(allocator, &w, config, a) catch |e| return fail(&w, "referral", e),
+        .twap => |a| commands.twap(allocator, &w, config, a) catch |e| return fail(&w, "twap", e),
+        .batch => |a| commands.batchCmd(allocator, &w, config, a) catch |e| return fail(&w, "batch", e),
+        .trade => |a| trade_mod.run(allocator, .{
+            .chain = config.chain,
+            .key_hex = config.key_hex,
+            .address = config.getAddress(),
+        }, a.coin) catch |e| return fail(&w, "trade", e),
     }
 }
 
@@ -80,8 +92,12 @@ fn printHelp(w: *output_mod.Writer) !void {
     try w.styled(Style.bold, "USAGE\n");
     try w.print("  hl <command> [args] [flags]\n\n", .{});
 
+    try w.styled(Style.bold, "TRADING TERMINAL\n");
+    try w.print("  hl trade [COIN]             Full trading terminal (TUI)\n\n", .{});
+
     try w.styled(Style.bold, "MARKET DATA\n");
     try w.print("  hl markets                  Interactive market browser (TUI)\n", .{});
+    try w.print("  hl price <COIN>             Current price (mid + bid/ask)\n", .{});
     try w.print("  hl mids [COIN]              Mid prices (top 20, --all)\n", .{});
     try w.print("  hl funding [--top N] [--all] Funding rates with heat bars\n", .{});
     try w.print("  hl book <COIN> [--live]     Order book depth\n", .{});
@@ -99,19 +115,26 @@ fn printHelp(w: *output_mod.Writer) !void {
     try w.print("  hl stream orders <ADDR>     Order status updates\n\n", .{});
 
     try w.styled(Style.bold, "ACCOUNT\n");
+    try w.print("  hl portfolio [ADDR]         Full portfolio (positions + spot)\n", .{});
     try w.print("  hl positions [ADDR]         Open positions\n", .{});
     try w.print("  hl orders [ADDR]            Open orders\n", .{});
     try w.print("  hl fills [ADDR]             Recent fills\n", .{});
     try w.print("  hl balance [ADDR]           Spot + perp balances\n", .{});
-    try w.print("  hl status <OID>             Order status\n\n", .{});
+    try w.print("  hl status <OID>             Order status\n", .{});
+    try w.print("  hl referral [set <CODE>]    Referral status or set code\n\n", .{});
 
     try w.styled(Style.bold, "TRADING\n");
     try w.print("  hl buy <COIN> <SZ> [@PX]    Limit buy (@PX) or market\n", .{});
     try w.print("  hl sell <COIN> <SZ> [@PX]   Limit sell (@PX) or market\n", .{});
+    try w.print("  hl long/short               Aliases for buy/sell\n", .{});
+    try w.print("  hl buy BTC 1.0 @98000 --tp 105000 --sl 95000  Bracket\n", .{});
+    try w.print("  hl buy BTC 1.0 --trigger-above 100000  Trigger order\n", .{});
     try w.print("  hl modify <COIN> <OID> <SZ> <PX>  Modify existing order\n", .{});
-    try w.print("  hl cancel <COIN> <OID>      Cancel by OID\n", .{});
-    try w.print("  hl cancel <COIN> --cloid <HEX>  Cancel by CLOID\n", .{});
-    try w.print("  hl cancel --all             Cancel all orders\n\n", .{});
+    try w.print("  hl cancel <COIN> [OID]      Cancel by OID or all for coin\n", .{});
+    try w.print("  hl cancel --all             Cancel all orders\n", .{});
+    try w.print("  hl leverage <COIN> [N]      Query or set leverage\n", .{});
+    try w.print("  hl twap <COIN> buy|sell <SZ> --duration 1h --slices 10\n", .{});
+    try w.print("  hl batch \"buy BTC 0.1 @98000\" \"sell ETH 1.0\"\n\n", .{});
 
     try w.styled(Style.bold, "TRANSFERS\n");
     try w.print("  hl send <AMT> [TOKEN] <DEST>      Send to address\n", .{});
@@ -128,5 +151,6 @@ fn printHelp(w: *output_mod.Writer) !void {
 
     try w.styled(Style.dim, "  Config: .env, ~/.hl/config, or env vars (HL_KEY, HL_ADDRESS)\n");
     try w.styled(Style.dim, "  Pipe-aware: auto-outputs JSON when stdout is not a TTY\n");
-    try w.styled(Style.dim, "  Asset formats: BTC (perp), PURR/USDC (spot), xyz:BTC (HIP-3)\n\n");
+    try w.styled(Style.dim, "  Asset formats: BTC (perp), PURR/USDC (spot), xyz:BTC (HIP-3)\n");
+    try w.styled(Style.dim, "  Aliases: long=buy, short=sell, pos=positions, bal=balance\n\n");
 }
