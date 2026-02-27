@@ -1911,10 +1911,8 @@ pub fn book(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     return bookStatic(allocator, w, config, a);
 }
 
-// Resolve "UETH/USDC" → "@151" for spot API calls.
-// Some canonical pairs (e.g. PURR/USDC) work with the name directly,
-// but non-canonical ones need @index. We always try @index first.
-// Returns @index string in buf, or null if pair not found in spotMeta.
+// Resolve spot pair name to @index for API calls.
+// Returns null if pair not found in spotMeta.
 fn resolveSpotIndex(allocator: std.mem.Allocator, config: Config, pair: []const u8, buf: *[16]u8) ?[]const u8 {
     const slash = std.mem.indexOf(u8, pair, "/") orelse return null;
     const base = pair[0..slash];
@@ -1934,9 +1932,8 @@ fn resolveSpotIndex(allocator: std.mem.Allocator, config: Config, pair: []const 
     return null;
 }
 
-// Resolve spot coin for APIs that accept both @index and pair names.
-// Most pairs need @index (e.g. @151 for UETH/USDC). Canonical pairs
-// like PURR/USDC (index 0) only work with the pair name directly.
+// Resolve spot coin for API calls. Index 0 (PURR/USDC) only
+// accepts the pair name directly; all others need @index.
 fn resolveSpotCoin(allocator: std.mem.Allocator, config: Config, pair: []const u8, buf: *[16]u8) []const u8 {
     const idx = resolveSpotIndex(allocator, config, pair, buf) orelse return pair;
     if (std.mem.eql(u8, idx, "@0")) return pair;
@@ -2430,7 +2427,7 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
 }
 
 pub fn stream(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.StreamArgs) !void {
-    // Resolve spot pair names (e.g. "UETH/USDC" → "@151") for WS subscriptions
+    // Resolve spot pair names to @index for WS subscriptions
     var spot_idx_buf: [16]u8 = undefined;
     var coin_upper_buf: [16]u8 = undefined;
     const resolved_coin: ?[]const u8 = if (a.coin) |c| blk: {
