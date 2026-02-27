@@ -4,7 +4,7 @@ All market data commands work without authentication.
 
 ## `hlz price <COIN>`
 
-Smart price lookup across all Hyperliquid venues. Resolves perps, spot pairs, and HIP-3 DEX markets automatically.
+Get the current price for any asset — perps, spot pairs, or HIP-3 DEX markets.
 
 **Resolution rules:**
 - `BTC` → perp on default dex (most liquid, USDC-settled)
@@ -45,7 +45,7 @@ hlz price HYPE --all --json
 
 **Spot price accuracy:** For spot pairs, `price` uses the `tokenDetails` API which returns oracle-adjusted USD prices (same as the Hyperliquid web frontend). The raw `allMids` endpoint returns per-sz-unit book midpoints which can differ significantly for non-canonical tokens — use `hlz mids` if you need raw book data.
 
-**Perp collateral:** Different HIP-3 DEXes use different collateral tokens (USDC, USDH, USDE). Use `--dex` to target a specific venue. Use `hlz dexes` to see available DEXes.
+**Perp collateral:** Different HIP-3 DEXes settle in different tokens. The default Hyperliquid dex uses USDC, but others may use USDH (e.g. Felix) or USDE. Prices on these venues are denominated in their respective collateral. Use `--dex` to target a specific venue, and `hlz dexes` to list available DEXes.
 
 ## `hlz mids [COIN]`
 

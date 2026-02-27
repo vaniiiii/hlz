@@ -330,7 +330,7 @@ All market data commands work without authentication.
 
 ## `hlz price <COIN>`
 
-Smart price lookup across perps, spot, and HIP-3 DEXes.
+Get the current price for any asset — perps, spot pairs, or HIP-3 DEX markets.
 
 Flags: `--dex NAME`, `--quote ASSET`, `--all`
 
