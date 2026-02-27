@@ -9,7 +9,7 @@ export default defineConfig({
     colorScheme: "dark",
   },
   accentColor: "#f7a41d",
-  logoUrl: "/hlz-logo.svg",
+  logoUrl: "/hlz-logo-dark.svg",
   iconUrl: "/favicon.svg",
   editLink: {
     link: "https://github.com/vaniiiii/hlz/edit/main/docs/pages/:path",

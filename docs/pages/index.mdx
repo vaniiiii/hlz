@@ -10,16 +10,25 @@ outline: false
 import { HomePage } from 'vocs/components'
 
 <HomePage.Root>
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet" />
-  <img src="/hlz-wordmark.svg" alt="hlz" style={{ height: '80px', margin: '0 auto 4px' }} />
+  <img src="/hlz-wordmark-dark.svg" alt="hlz" style={{ height: '80px', margin: '0 auto 4px' }} />
   <HomePage.Tagline>Zig Tooling for Hyperliquid</HomePage.Tagline>
 
 <div className="max-md:-mx-[var(--vocs-content_horizontalPadding,24px)] max-md:[&_[data-v-code-container]]:!rounded-none max-md:[&_pre]:!whitespace-pre-wrap max-md:[&_pre]:!overflow-x-hidden max-md:[&_pre]:!break-all max-md:[&_code]:!block max-md:[&_code]:!whitespace-pre-wrap max-md:[&_code]:!break-all max-md:[&_.line]:!whitespace-pre-wrap max-md:[&_.line]:!break-all">
-```bash
-# See https://github.com/vaniiiii/hlz/releases/latest for binaries
+:::code-group
+```bash [macOS]
+# Apple Silicon (M1/M2/M3)
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+# Intel Mac: replace with hlz-darwin-x64
 chmod +x hlz
 ```
+
+```bash [Linux]
+# x86_64 (static)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
+# aarch64: replace with hlz-linux-arm64
+chmod +x hlz
+```
+:::
 </div>
 
   <HomePage.Description>
@@ -36,7 +45,7 @@ chmod +x hlz
 <div style={{ maxWidth: '800px', margin: '0 auto' }}>
 
 <div style={{ margin: '48px 0', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--vocs-color_border)' }}>
-  <video src="/tradingterminal.mp4" autoPlay loop muted playsInline style={{ width: '100%', display: 'block' }} />
+  <img src="/terminal.gif" alt="hlz terminal demo" style={{ width: '100%', display: 'block' }} />
 </div>
 
 {/* ── Feature cards ── */}
@@ -194,4 +203,3 @@ and [zabi](https://github.com/Raiden1411/zabi).
 </div>
 
 </div>
-

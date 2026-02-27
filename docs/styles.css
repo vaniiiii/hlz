@@ -1,4 +1,15 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap");
+
 /* hlz — zig orange accent */
+
+:root {
+  --hlz-font-display: "Space Grotesk", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+}
+
+[data-layout="landing"] .vocs_Content,
+[data-layout="landing"] .vocs_HomePage {
+  font-family: var(--hlz-font-display);
+}
 
 /* Center search on landing page */
 [data-layout="landing"] .vocs_DesktopTopNav .vocs_DesktopSearch_search {

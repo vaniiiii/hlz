@@ -4,23 +4,31 @@
 
 Download from [GitHub Releases](https://github.com/vaniiiii/hlz/releases/latest):
 
-```bash
-# macOS (Apple Silicon)
+:::code-group
+
+```bash [macOS (Apple Silicon)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
 chmod +x hlz && sudo mv hlz /usr/local/bin/
+```
 
-# macOS (Intel)
+```bash [macOS (Intel)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-x64
 chmod +x hlz && sudo mv hlz /usr/local/bin/
+```
 
-# Linux (x86_64, static)
+```bash [Linux (x86_64)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
 chmod +x hlz && sudo mv hlz /usr/local/bin/
+```
 
-# Linux (aarch64, static)
+```bash [Linux (aarch64)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-arm64
 chmod +x hlz && sudo mv hlz /usr/local/bin/
 ```
+
+:::
+
+> **Static binaries** — Linux builds are statically linked (musl). Zero dependencies, runs on any distro. ~636KB.
 
 ## Build from Source
 
@@ -30,14 +38,14 @@ Requires [Zig 0.15.2](https://ziglang.org/download/).
 git clone https://github.com/vaniiiii/hlz
 cd hlz
 
-# Debug build (fast compile, larger binary)
-zig build
-
 # Production build (636KB stripped binary)
 zig build -Doptimize=ReleaseSmall
 
-# Fastest execution (1.4MB)
+# Fastest execution (1.2MB)
 zig build -Doptimize=ReleaseFast
+
+# Debug build (fast compile)
+zig build
 ```
 
 Binaries are output to `zig-out/bin/`.
@@ -64,20 +72,25 @@ const hlz_dep = b.dependency("hlz", .{
 exe.root_module.addImport("hlz", hlz_dep.module("hlz"));
 ```
 
-## Verify Installation
+## Verify
 
 ```bash
 hlz version
-hlz price BTC     # Should show current BTC price
+hlz price BTC
 ```
 
 ## Updating
 
-```bash
-# Download latest release
+:::code-group
+
+```bash [Binary]
+# Re-download latest release (replace platform as needed)
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
 chmod +x hlz && sudo mv hlz /usr/local/bin/
+```
 
-# Or from source
+```bash [Source]
 git pull && zig build -Doptimize=ReleaseSmall
 ```
+
+:::
