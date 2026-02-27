@@ -647,6 +647,10 @@ pub const Client = struct {
         return self.infoTyped([]R.SubAccount, body);
     }
 
+    pub fn getDexInfos(self: *Client) !Parsed([]R.DexInfo) {
+        return self.infoTyped([]R.DexInfo, "{\"type\":\"perpDexs\"}");
+    }
+
     pub fn getPerpDexs(self: *Client) !Parsed([]R.Dex) {
         return self.infoTyped([]R.Dex,
             \\{"type":"perpDexs"}
@@ -676,6 +680,72 @@ pub const Client = struct {
         var buf: [256]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, "{{\"type\":\"recentTrades\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;
         return self.infoTyped([]R.Trade, body);
+    }
+
+    /// Parse metaAndAssetCtxs — heterogeneous [meta, [ctx, ...]] tuple.
+    /// Returns a slice of MetaAndAssetCtx pairing each PerpMeta with its AssetContext.
+    pub fn getMetaAndAssetCtxs(self: *Client, dex_name: ?[]const u8) !MetaAndAssetCtxsResult {
+        var raw = if (dex_name) |d| blk: {
+            var buf: [256]u8 = undefined;
+            const body = std.fmt.bufPrint(&buf, "{{\"type\":\"metaAndAssetCtxs\",\"dexName\":\"{s}\"}}", .{d}) catch return error.Overflow;
+            break :blk try self.infoRequest(body);
+        } else try self.metaAndAssetCtxs();
+        defer raw.deinit();
+        const val = try raw.json();
+        if (val != .array or val.array.items.len < 2) return error.Overflow;
+        const meta_val = val.array.items[0];
+        const ctxs_val = val.array.items[1];
+        const universe_arr = if (meta_val == .object)
+            if (meta_val.object.get("universe")) |u| (if (u == .array) u.array.items else null) else null
+        else
+            null;
+        const ctx_arr = if (ctxs_val == .array) ctxs_val.array.items else null;
+        const u_arr = universe_arr orelse return error.Overflow;
+        const c_arr = ctx_arr orelse return error.Overflow;
+        const n = @min(u_arr.len, c_arr.len);
+        var entries = try self.allocator.alloc(R.MetaAndAssetCtx, n);
+        var count: usize = 0;
+        for (0..n) |i| {
+            const meta = std.json.parseFromValue(R.PerpMeta, self.allocator, u_arr[i], R.ParseOpts) catch continue;
+            const ctx = std.json.parseFromValue(R.AssetContext, self.allocator, c_arr[i], R.ParseOpts) catch {
+                meta.deinit();
+                continue;
+            };
+            entries[count] = .{ .meta = meta.value, .ctx = ctx.value };
+            count += 1;
+        }
+        return .{ .entries = entries[0..count], .alloc_len = n, .allocator = self.allocator };
+    }
+
+    pub const MetaAndAssetCtxsResult = struct {
+        entries: []R.MetaAndAssetCtx,
+        alloc_len: usize,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *MetaAndAssetCtxsResult) void {
+            self.allocator.free(self.entries.ptr[0..self.alloc_len]);
+        }
+    };
+
+    pub fn getL2Book(self: *Client, coin: []const u8) !Parsed(R.L2Book) {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, "{{\"type\":\"l2Book\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;
+        return self.infoTyped(R.L2Book, body);
+    }
+
+    pub fn getAllMids(self: *Client, dex_name: ?[]const u8) !Parsed(std.json.Value) {
+        if (dex_name) |d| {
+            var buf: [256]u8 = undefined;
+            const body = std.fmt.bufPrint(&buf, "{{\"type\":\"allMids\",\"dexName\":\"{s}\"}}", .{d}) catch return error.Overflow;
+            return self.infoTyped(std.json.Value, body);
+        }
+        return self.infoTyped(std.json.Value, "{\"type\":\"allMids\"}");
+    }
+
+    pub fn getReferral(self: *Client, user: []const u8) !Parsed(R.Referral) {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, "{{\"type\":\"referral\",\"user\":\"{s}\"}}", .{user}) catch return error.Overflow;
+        return self.infoTyped(R.Referral, body);
     }
 
     pub fn getActiveAssetData(self: *Client, user: []const u8, coin: []const u8) !Parsed(R.ActiveAssetData) {
