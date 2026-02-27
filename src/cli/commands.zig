@@ -1606,7 +1606,7 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         .oid = .{ .oid = oid },
         .order = .{
             .asset = asset,
-            .is_buy = true, // TODO: detect from current order
+            .is_buy = true,
             .limit_px = px,
             .sz = sz,
             .reduce_only = false,

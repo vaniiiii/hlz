@@ -9,7 +9,7 @@
 
 hlz gives you three things:
 
-1. **`hlz`** — A 38-command CLI for Hyperliquid (636KB)
+1. **`hlz`** — A 38-command CLI for Hyperliquid (827KB)
 2. **`hlz-terminal`** — A full trading terminal (768KB)
 3. **hlz** — A Zig library for building your own tools
 
@@ -117,7 +117,7 @@ curl -fsSL https://hlz.dev/install.sh | sh
 ```
 
 This downloads the latest release for your platform and installs:
-- `hlz` — CLI tool (636KB)
+- `hlz` — CLI tool (827KB)
 - `hlz-terminal` — Trading terminal (768KB)
 
 Supported platforms:
@@ -135,7 +135,7 @@ cd hlz
 # Debug build (fast compile, larger binary)
 zig build
 
-# Production build (636KB stripped binary)
+# Production build (827KB stripped binary)
 zig build -Doptimize=ReleaseSmall
 
 # Fastest execution (1.4MB)
@@ -268,13 +268,13 @@ export HL_CHAIN=testnet
 
 # CLI Overview
 
-`hlz` is a 38-command CLI for Hyperliquid. 636KB static binary, zero config required for market data.
+`hlz` is a 38-command CLI for Hyperliquid. 827KB static binary, zero config required for market data.
 
 ## Design Principles
 
 - **Pipe-aware** — Tables on TTY, JSON when piped. No surprises.
 - **Agent-native** — Structured output, semantic exit codes, no interactive prompts.
-- **One binary** — Everything in 636KB. No runtime dependencies.
+- **One binary** — Everything in 827KB. No runtime dependencies.
 - **Smart defaults** — Works out of the box. Power users customize.
 
 ## Command Categories

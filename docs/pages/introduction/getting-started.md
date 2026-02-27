@@ -2,7 +2,7 @@
 
 hlz gives you three things:
 
-1. **`hlz`** — A 38-command CLI for Hyperliquid (636KB)
+1. **`hlz`** — A 38-command CLI for Hyperliquid (827KB)
 2. **`hlz-terminal`** — A full trading terminal (768KB)
 3. **hlz** — A Zig library for building your own tools
 
