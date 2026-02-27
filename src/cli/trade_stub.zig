@@ -8,6 +8,6 @@ pub const Config = struct {
 };
 
 pub fn run(_: std.mem.Allocator, _: Config, _: []const u8) !void {
-    std.fs.File.stdout().writeAll("Trading terminal not available. Use `hl-trade` instead.\n") catch {};
+    std.fs.File.stdout().writeAll("Trading terminal is a separate binary. Install hlz-terminal and run: hlz-terminal [COIN]\n") catch {};
     return error.NotAvailable;
 }

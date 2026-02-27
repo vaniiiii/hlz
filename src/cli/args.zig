@@ -288,17 +288,17 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
     else if (std.mem.eql(u8, cmd_str, "send"))
         .{ .send = parseSend(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "stream") or std.mem.eql(u8, cmd_str, "sub"))
-        .{ .stream = parseStream(rest) }
+        if (hasHelpFlag(rest)) .{ .help = {} } else .{ .stream = parseStream(rest) }
     else if (std.mem.eql(u8, cmd_str, "status"))
         .{ .status = .{ .oid = if (rest.len > 0) rest[0] else return error.MissingArgument } }
     else if (std.mem.eql(u8, cmd_str, "funding") or std.mem.eql(u8, cmd_str, "fund"))
         .{ .funding = parseFunding(rest) }
     else if (std.mem.eql(u8, cmd_str, "markets") or std.mem.eql(u8, cmd_str, "m"))
-        .{ .markets = {} }
+        if (hasHelpFlag(rest)) .{ .help = {} } else .{ .markets = {} }
     else if (std.mem.eql(u8, cmd_str, "book") or std.mem.eql(u8, cmd_str, "ob"))
-        .{ .book = parseBook(rest) orelse return error.MissingArgument }
+        if (hasHelpFlag(rest)) .{ .help = {} } else .{ .book = parseBook(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "trade") or std.mem.eql(u8, cmd_str, "t"))
-        .{ .trade = parseTrade(rest) }
+        if (hasHelpFlag(rest)) .{ .help = {} } else .{ .trade = parseTrade(rest) }
     else if (std.mem.eql(u8, cmd_str, "leverage") or std.mem.eql(u8, cmd_str, "lev"))
         .{ .leverage = parseLeverage(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "price"))
@@ -479,6 +479,13 @@ fn parseFunding(args: []const []const u8) FundingArgs {
         }
     }
     return result;
+}
+
+fn hasHelpFlag(args: []const []const u8) bool {
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-h")) return true;
+    }
+    return false;
 }
 
 fn parsePrice(args: []const []const u8) ?PriceArgs {
