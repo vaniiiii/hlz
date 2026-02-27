@@ -573,40 +573,35 @@ pub fn positions(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
 
     // HIP-3 DEX positions
     if (a.all_dexes) {
-        var dex_result = client.perpDexs() catch null;
-        if (dex_result) |*dr| {
-            defer dr.deinit();
-            const dv = dr.json() catch null;
-            if (dv) |dex_val| {
-                if (dex_val == .array) {
-                    for (dex_val.array.items) |item| {
-                        const dex_name = json_mod.getString(item, "name") orelse continue;
-                        var dex_perp = client.clearinghouseState(addr, dex_name) catch continue;
-                        defer dex_perp.deinit();
-                        const dpv = dex_perp.json() catch continue;
-                        const dex_pos = json_mod.getArray(dpv, "assetPositions") orelse continue;
-                        var has_dex_pos = false;
-                        for (dex_pos) |dp| {
-                            const pos_obj = if (dp.object.get("position")) |p| p else continue;
-                            const szi_s = json_mod.getString(pos_obj, "szi") orelse continue;
-                            const szi_f = std.fmt.parseFloat(f64, szi_s) catch continue;
-                            if (szi_f == 0) continue;
-                            if (!has_dex_pos) {
-                                try w.print("\n", .{});
-                                try w.styled(Style.bold, "DEX: ");
-                                try w.styled(Style.cyan, dex_name);
-                                try w.print("\n", .{});
-                                has_dex_pos = true;
-                            }
-                            const coin = json_mod.getString(pos_obj, "coin") orelse "?";
-                            const side_s: []const u8 = if (szi_f > 0) "LONG" else "SHORT";
-                            const entry_s = json_mod.getString(pos_obj, "entryPx") orelse "-";
-                            const pnl_s = json_mod.getString(pos_obj, "unrealizedPnl") orelse "-";
-                            try w.print("  {s: <8} {s: <6} {s: >12} entry {s: >10} pnl {s}\n", .{
-                                coin, side_s, szi_s, entry_s, pnl_s,
-                            });
-                        }
+        var dex_typed = client.getPerpDexs() catch null;
+        if (dex_typed) |*dt| {
+            defer dt.deinit();
+            for (dt.value) |dex| {
+                var dex_state = client.getClearinghouseState(addr, dex.name) catch continue;
+                defer dex_state.deinit();
+                var has_dex_pos = false;
+                for (dex_state.value.assetPositions) |ap| {
+                    const p = ap.position;
+                    const szi_f = decToF64(p.szi);
+                    if (szi_f == 0) continue;
+                    if (!has_dex_pos) {
+                        try w.print("\n", .{});
+                        try w.styled(Style.bold, "DEX: ");
+                        try w.styled(Style.cyan, dex.name);
+                        try w.print("\n", .{});
+                        has_dex_pos = true;
                     }
+                    var szi_buf: [32]u8 = undefined;
+                    var entry_buf: [32]u8 = undefined;
+                    var pnl_buf: [32]u8 = undefined;
+                    const side_s: []const u8 = if (szi_f > 0) "LONG" else "SHORT";
+                    try w.print("  {s: <8} {s: <6} {s: >12} entry {s: >10} pnl {s}\n", .{
+                        p.coin,
+                        side_s,
+                        decFmt(p.szi, &szi_buf),
+                        if (p.entryPx) |ep| decFmt(ep, &entry_buf) else "-",
+                        if (p.unrealizedPnl) |up| decFmt(up, &pnl_buf) else "-",
+                    });
                 }
             }
         }
@@ -676,11 +671,11 @@ pub fn fills(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         return;
     }
 
-    const val = try result.json();
-    const arr = if (val == .array) val.array.items else {
+    var typed = parseTyped([]response.Fill, allocator, &result) orelse {
         try w.styled(Style.dim, "  No fills found\n");
         return;
     };
+    defer typed.deinit();
 
     try w.heading("RECENT FILLS");
     const hdr = [_]Column{
@@ -693,9 +688,8 @@ pub fn fills(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     };
     try w.tableHeader(&hdr);
 
-    const limit = @min(arr.len, 20); // show last 20
-    for (arr[0..limit]) |item| {
-        const fill = response.Fill.fromJson(item) orelse continue;
+    const limit = @min(typed.value.len, 20);
+    for (typed.value[0..limit]) |fill| {
         var sz_buf: [32]u8 = undefined;
         var px_buf: [32]u8 = undefined;
         var fee_buf: [32]u8 = undefined;
@@ -707,9 +701,9 @@ pub fn fills(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         const cols = [_]Column{
             .{ .text = fill.coin, .width = 8, .color = Style.cyan },
             .{ .text = side_str, .width = 6, .color = side_color },
-            .{ .text = decStr(fill.sz, &sz_buf), .width = 12, .align_right = true },
-            .{ .text = decStr(fill.px, &px_buf), .width = 12, .align_right = true },
-            .{ .text = decStr(fill.fee, &fee_buf), .width = 10, .align_right = true, .color = Style.dim },
+            .{ .text = decFmt(fill.sz, &sz_buf), .width = 12, .align_right = true },
+            .{ .text = decFmt(fill.px, &px_buf), .width = 12, .align_right = true },
+            .{ .text = decFmt(fill.fee, &fee_buf), .width = 10, .align_right = true, .color = Style.dim },
             .{ .text = decStr(fill.closedPnl, &pnl_buf), .width = 12, .align_right = true, .color = Writer.pnlColor(fill.closedPnl) },
         };
         try w.tableRow(&cols);
@@ -733,21 +727,23 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         return;
     }
 
-    const perp_val = try perp_result.json();
-    const margin = if (json_mod.getObject(perp_val, "marginSummary")) |ms|
-        response.MarginSummary.fromJson(ms)
-    else
-        null;
+    var perp_typed = parseTyped(response.ClearinghouseState, allocator, &perp_result) orelse {
+        try w.err("Failed to parse clearinghouse state");
+        return;
+    };
+    defer perp_typed.deinit();
+    const state = perp_typed.value;
+    const m = state.marginSummary;
 
     // Hero-style account header
     try w.nl();
     try w.styled(Style.muted, "  ACCOUNT\n\n");
 
-    if (margin) |m| {
+    {
         var av_buf: [32]u8 = undefined;
         try w.print("  ", .{});
         try w.styled(Style.bold_white, "$");
-        try w.styled(Style.bold_white, decStr(m.accountValue, &av_buf));
+        try w.styled(Style.bold_white, decFmt(m.accountValue, &av_buf));
         try w.nl();
         try w.nl();
 
@@ -760,16 +756,15 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
 
         var mu_buf: [32]u8 = undefined;
         var wd_buf: [32]u8 = undefined;
-        const withdrawable = json_mod.getDecimal(perp_val, "withdrawable");
 
         try w.style(Style.muted);
         try w.print("  margin ", .{});
         try w.style(Style.reset);
-        try w.styled(Style.white, decStr(m.totalMarginUsed, &mu_buf));
+        try w.styled(Style.white, decFmt(m.totalMarginUsed, &mu_buf));
         try w.style(Style.muted);
         try w.print("  free ", .{});
         try w.style(Style.reset);
-        try w.styled(Style.white, decStr(withdrawable, &wd_buf));
+        try w.styled(Style.white, decFmt(state.withdrawable, &wd_buf));
 
         const av_f = decToF64(m.accountValue);
         const mu_f = decToF64(m.totalMarginUsed);
@@ -789,18 +784,17 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
     }
     try w.nl();
 
-    const spot_val = try spot_result.json();
-    const balances_arr = if (json_mod.getObject(spot_val, "balances")) |_| blk: {
-        break :blk json_mod.getArray(spot_val, "balances");
-    } else if (spot_val == .array) spot_val.array.items else null;
+    var spot_typed = parseTyped(response.SpotClearinghouseState, allocator, &spot_result) orelse {
+        try w.nl();
+        return;
+    };
+    defer spot_typed.deinit();
+    const balances = spot_typed.value.balances;
 
-    if (balances_arr) |bal_arr| {
-        // Count non-zero
+    {
         var nz: usize = 0;
-        for (bal_arr) |item| {
-            const b = response.UserBalance.fromJson(item) orelse continue;
-            const total_f = decToF64(b.total);
-            if (total_f != 0) nz += 1;
+        for (balances) |b| {
+            if (decToF64(b.total) != 0) nz += 1;
         }
         if (nz > 0) {
             try w.heading("SPOT");
@@ -811,8 +805,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
             };
             try w.tableHeader(&hdr);
 
-            for (bal_arr) |item| {
-                const b = response.UserBalance.fromJson(item) orelse continue;
+            for (balances) |b| {
                 var total_buf: [32]u8 = undefined;
                 var hold_buf: [32]u8 = undefined;
                 const total_f = decToF64(b.total);
@@ -831,34 +824,22 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
 
     // HIP-3 DEX balances (--all-dexes)
     if (a.all_dexes) {
-        var dex_result = client.perpDexs() catch null;
-        if (dex_result) |*dr| {
-            defer dr.deinit();
-            const dv = dr.json() catch null;
-            if (dv) |dex_val| {
-                if (dex_val == .array) {
-                    for (dex_val.array.items) |item| {
-                        const dex_name = json_mod.getString(item, "name") orelse continue;
-                        var dex_perp = client.clearinghouseState(addr, dex_name) catch continue;
-                        defer dex_perp.deinit();
-                        const dpv = dex_perp.json() catch continue;
-                        const dm = if (json_mod.getObject(dpv, "marginSummary")) |ms|
-                            response.MarginSummary.fromJson(ms)
-                        else
-                            null;
-                        if (dm) |m| {
-                            const av_f = decToF64(m.accountValue);
-                            if (av_f == 0) continue;
-                            var title_buf: [32]u8 = undefined;
-                            const title = std.fmt.bufPrint(&title_buf, "DEX \xc2\xb7 {s}", .{dex_name}) catch "DEX";
-                            try w.heading(title);
-                            var dav_buf: [32]u8 = undefined;
-                            var dmu_buf: [32]u8 = undefined;
-                            try w.kv("Account Value", decStr(m.accountValue, &dav_buf));
-                            try w.kv("Margin Used", decStr(m.totalMarginUsed, &dmu_buf));
-                        }
-                    }
-                }
+        var dex_typed = client.getPerpDexs() catch null;
+        if (dex_typed) |*dt| {
+            defer dt.deinit();
+            for (dt.value) |dex| {
+                var dex_state = client.getClearinghouseState(addr, dex.name) catch continue;
+                defer dex_state.deinit();
+                const dm = dex_state.value.marginSummary;
+                const av_f = decToF64(dm.accountValue);
+                if (av_f == 0) continue;
+                var title_buf: [32]u8 = undefined;
+                const title = std.fmt.bufPrint(&title_buf, "DEX \xc2\xb7 {s}", .{dex.name}) catch "DEX";
+                try w.heading(title);
+                var dav_buf: [32]u8 = undefined;
+                var dmu_buf: [32]u8 = undefined;
+                try w.kv("Account Value", decFmt(dm.accountValue, &dav_buf));
+                try w.kv("Margin Used", decFmt(dm.totalMarginUsed, &dmu_buf));
             }
         }
     }
@@ -878,11 +859,12 @@ pub fn perps(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         return;
     }
 
-    const val = try result.json();
-    const universe = json_mod.getArray(val, "universe") orelse {
+    var typed = parseTyped(response.PerpUniverse, allocator, &result) orelse {
         try w.styled(Style.dim, "  No perp markets found\n");
         return;
     };
+    defer typed.deinit();
+    const universe = typed.value.universe;
 
     if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
         return perpsTui(allocator, config, universe);
@@ -903,15 +885,14 @@ pub fn perps(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     const start = if (a.all) @as(usize, 0) else (a.page -| 1) * per_page;
     const limit = if (a.all) universe.len else per_page;
 
-    for (universe) |item| {
-        const name = json_mod.getString(item, "name") orelse continue;
-        if (a.filter) |f| { if (!containsInsensitive(name, f)) continue; }
+    for (universe) |pm| {
+        if (a.filter) |f| { if (!containsInsensitive(pm.name, f)) continue; }
         total += 1;
     }
 
-    for (universe) |item| {
+    for (universe) |pm| {
         if (shown >= limit) break;
-        const m = response.PerpMeta.fromJson(item) orelse continue;
+        const m = pm;
         if (a.filter) |f| { if (!containsInsensitive(m.name, f)) continue; }
         if (skipped < start) { skipped += 1; continue; }
         var lev_buf: [16]u8 = undefined;
@@ -929,7 +910,7 @@ pub fn perps(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     try w.footer();
 }
 
-fn perpsTui(allocator: std.mem.Allocator, config: Config, universe: []const std.json.Value) !void {
+fn perpsTui(allocator: std.mem.Allocator, config: Config, universe: []const response.PerpMeta) !void {
     const n = @min(universe.len, ListW.MAX_ITEMS);
 
     const CellBuf = struct { lev: [16]u8 = undefined, lev_len: usize = 0, dec: [8]u8 = undefined, dec_len: usize = 0 };
@@ -940,7 +921,7 @@ fn perpsTui(allocator: std.mem.Allocator, config: Config, universe: []const std.
     const yellow = BufMod.Style{ .fg = .yellow };
 
     for (0..n) |i| {
-        const m = response.PerpMeta.fromJson(universe[i]) orelse continue;
+        const m = universe[i];
         const lev_s = std.fmt.bufPrint(&cell_bufs[i].lev, "{d}x", .{m.maxLeverage}) catch "?";
         cell_bufs[i].lev_len = lev_s.len;
         const dec_s = std.fmt.bufPrint(&cell_bufs[i].dec, "{d}", .{m.szDecimals}) catch "?";
@@ -986,11 +967,11 @@ pub fn dexes(allocator: std.mem.Allocator, w: *Writer, config: Config) !void {
         return;
     }
 
-    const val = try result.json();
-    const arr = if (val == .array) val.array.items else {
+    var typed = parseTyped([]response.DexInfo, allocator, &result) orelse {
         try w.styled(Style.dim, "  No DEXes found\n");
         return;
     };
+    defer typed.deinit();
 
     try w.heading("HIP-3 DEXES");
     const hdr = [_]Column{
@@ -1001,14 +982,11 @@ pub fn dexes(allocator: std.mem.Allocator, w: *Writer, config: Config) !void {
     };
     try w.tableHeader(&hdr);
 
-    for (arr) |item| {
-        const name = json_mod.getString(item, "name") orelse continue;
-        const full_name = json_mod.getString(item, "fullName") orelse name;
-        const deployer_full = json_mod.getString(item, "deployer") orelse "-";
-        // Count markets from assetToStreamingOiCap
-        var markets_count: usize = 0;
-        if (json_mod.getArray(item, "assetToStreamingOiCap")) |oi|
-            markets_count = oi.len;
+    for (typed.value) |d| {
+        const name = d.name;
+        const full_name = d.fullName orelse name;
+        const deployer_full = d.deployer orelse "-";
+        const markets_count: usize = if (d.assetToStreamingOiCap) |oi| oi.len else 0;
         var cnt_buf: [8]u8 = undefined;
         const cnt_str = std.fmt.bufPrint(&cnt_buf, "{d}", .{markets_count}) catch "?";
         // Truncate deployer to 0x1234...5678
@@ -1044,11 +1022,12 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         return;
     }
 
-    const val = try result.json();
-    const tokens = json_mod.getArray(val, "tokens") orelse {
+    var typed = parseTyped(response.SpotMeta, allocator, &result) orelse {
         try w.styled(Style.dim, "  No spot markets found\n");
         return;
     };
+    defer typed.deinit();
+    const tokens = typed.value.tokens;
 
     if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
         return spotTui(allocator, tokens);
@@ -1068,17 +1047,15 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     const limit = if (a.all) tokens.len else per_page;
 
     var total: usize = 0;
-    for (tokens) |item| {
-        const t = response.SpotToken.fromJson(item) orelse continue;
+    for (tokens) |t| {
         if (a.filter) |f| { if (!containsInsensitive(t.name, f)) continue; }
         total += 1;
     }
 
     var shown: usize = 0;
     var skipped: usize = 0;
-    for (tokens) |item| {
+    for (tokens) |t| {
         if (shown >= limit) break;
-        const t = response.SpotToken.fromJson(item) orelse continue;
         if (a.filter) |f| { if (!containsInsensitive(t.name, f)) continue; }
         if (skipped < start) { skipped += 1; continue; }
         var idx_buf: [8]u8 = undefined;
@@ -1098,8 +1075,8 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     try w.footer();
 }
 
-fn spotTui(allocator: std.mem.Allocator, tokens: []const std.json.Value) !void {
-    const n = @min(tokens.len, ListW.MAX_ITEMS);
+fn spotTui(allocator: std.mem.Allocator, tokens_arr: []const response.SpotToken) !void {
+    const n = @min(tokens_arr.len, ListW.MAX_ITEMS);
 
     const CellBuf = struct { idx: [8]u8 = undefined, idx_len: usize = 0, sz: [8]u8 = undefined, sz_len: usize = 0, wei: [8]u8 = undefined, wei_len: usize = 0 };
     var cell_bufs: [ListW.MAX_ITEMS]CellBuf = undefined;
@@ -1109,7 +1086,7 @@ fn spotTui(allocator: std.mem.Allocator, tokens: []const std.json.Value) !void {
     const cyan = BufMod.Style{ .fg = .cyan, .bold = true };
 
     for (0..n) |i| {
-        const t = response.SpotToken.fromJson(tokens[i]) orelse continue;
+        const t = tokens_arr[i];
         const idx_s = std.fmt.bufPrint(&cell_bufs[count].idx, "{d}", .{t.index}) catch "?";
         cell_bufs[count].idx_len = idx_s.len;
         const sz_s = std.fmt.bufPrint(&cell_bufs[count].sz, "{d}", .{t.szDecimals}) catch "?";
@@ -1174,35 +1151,24 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     else if (a.slippage) |sl_str|
         Decimal.fromString(sl_str) catch return error.Overflow
     else blk: {
-        var bbo_result = try client.l2Book(a.coin);
-        defer bbo_result.deinit();
-        const bbo_val = try bbo_result.json();
-        const levels = json_mod.getArray(bbo_val, "levels") orelse
+        var book_typed = client.getL2Book(a.coin) catch
             break :blk if (is_buy) Decimal.fromString("999999") catch unreachable else Decimal.fromString("0.01") catch unreachable;
+        defer book_typed.deinit();
+        const bl = book_typed.value.levels;
         if (is_buy) {
-            if (levels.len > 1) {
-                const asks = if (levels[1] == .array) levels[1].array.items else break :blk Decimal.fromString("999999") catch unreachable;
-                if (asks.len > 0) {
-                    const ask_px_str = json_mod.getString(asks[0], "px") orelse break :blk Decimal.fromString("999999") catch unreachable;
-                    const ask_px = std.fmt.parseFloat(f64, ask_px_str) catch break :blk Decimal.fromString("999999") catch unreachable;
-                    const slippage_px = ask_px * 1.01;
-                    var sl_buf: [32]u8 = undefined;
-                    const sl_str2 = slippageFmt(&sl_buf, slippage_px);
-                    break :blk Decimal.fromString(sl_str2) catch Decimal.fromString("999999") catch unreachable;
-                }
+            if (bl[1].len > 0) {
+                const ask_px = decToF64(bl[1][0].px);
+                const slippage_px = ask_px * 1.01;
+                var sl_buf: [32]u8 = undefined;
+                break :blk Decimal.fromString(slippageFmt(&sl_buf, slippage_px)) catch Decimal.fromString("999999") catch unreachable;
             }
             break :blk Decimal.fromString("999999") catch unreachable;
         } else {
-            if (levels.len > 0) {
-                const bids = if (levels[0] == .array) levels[0].array.items else break :blk Decimal.fromString("0.01") catch unreachable;
-                if (bids.len > 0) {
-                    const bid_px_str = json_mod.getString(bids[0], "px") orelse break :blk Decimal.fromString("0.01") catch unreachable;
-                    const bid_px = std.fmt.parseFloat(f64, bid_px_str) catch break :blk Decimal.fromString("0.01") catch unreachable;
-                    const slippage_px = bid_px * 0.99;
-                    var sl_buf: [32]u8 = undefined;
-                    const sl_str2 = slippageFmt(&sl_buf, slippage_px);
-                    break :blk Decimal.fromString(sl_str2) catch Decimal.fromString("0.01") catch unreachable;
-                }
+            if (bl[0].len > 0) {
+                const bid_px = decToF64(bl[0][0].px);
+                const slippage_px = bid_px * 0.99;
+                var sl_buf: [32]u8 = undefined;
+                break :blk Decimal.fromString(slippageFmt(&sl_buf, slippage_px)) catch Decimal.fromString("0.01") catch unreachable;
             }
             break :blk Decimal.fromString("0.01") catch unreachable;
         }
@@ -1380,18 +1346,15 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     // cancel ETH (no OID, no CLOID) → cancel all orders for this coin
     if (a.oid == null and a.cloid == null) {
         const addr = config.getAddress() orelse config.requireAddress() catch return error.MissingAddress;
-        var orders_result = try client.openOrders(addr, null);
-        defer orders_result.deinit();
-        const orders_val = try orders_result.json();
-        const orders_arr = if (orders_val == .array) orders_val.array.items else return error.Overflow;
+        var orders_typed = try client.getOpenOrders(addr, null);
+        defer orders_typed.deinit();
 
         // Collect OIDs matching this coin
         var cancels: [64]types.Cancel = undefined;
         var cancel_count: usize = 0;
-        for (orders_arr) |order| {
-            const order_coin = json_mod.getString(order, "coin") orelse continue;
-            if (!std.ascii.eqlIgnoreCase(order_coin, coin)) continue;
-            const oid = json_mod.getInt(u64, order, "oid") orelse continue;
+        for (orders_typed.value) |order| {
+            if (!std.ascii.eqlIgnoreCase(order.coin, coin)) continue;
+            const oid = order.oid;
             if (cancel_count >= 64) break;
             cancels[cancel_count] = .{ .asset = asset, .oid = oid };
             cancel_count += 1;
@@ -1647,15 +1610,17 @@ pub fn funding(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    var result = try client.metaAndAssetCtxs();
-    defer result.deinit();
-
     if (w.format == .json) {
+        var result = try client.metaAndAssetCtxs();
+        defer result.deinit();
         try w.jsonRaw(result.body);
         return;
     }
 
-    var sorted = try parseFundingData(allocator, &result);
+    var mac = try client.getMetaAndAssetCtxs(null);
+    defer mac.deinit();
+
+    var sorted = try parseFundingData(allocator, mac.entries);
     defer allocator.free(sorted.entries.ptr[0..sorted.alloc_len]);
 
     if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
@@ -1734,7 +1699,8 @@ pub fn funding(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         if (is_tty) p = emit(&buf, p, Style.reset);
         p = spaces(&buf, p, bar_width - fill);
         if (is_tty) p = emit(&buf, p, Style.dim);
-        p = lpad(&buf, p, e.mark, 12);
+        var mark_buf2: [32]u8 = undefined;
+        p = lpad(&buf, p, decFmt(e.mark, &mark_buf2), 12);
         if (is_tty) p = emit(&buf, p, Style.reset);
         p = emit(&buf, p, "\r\n");
         stdout.writeAll(buf[0..p]) catch {};
@@ -1762,6 +1728,8 @@ fn fundingTui(allocator: std.mem.Allocator, entries: []const FundingEntry) !void
         rate_len: usize = 0,
         ann: [16]u8 = undefined,
         ann_len: usize = 0,
+        mark: [32]u8 = undefined,
+        mark_len: usize = 0,
     };
     var cell_bufs: [ListW.MAX_ITEMS]CellBuf = undefined;
     var items: [ListW.MAX_ITEMS]ListW.Item = undefined;
@@ -1776,10 +1744,13 @@ fn fundingTui(allocator: std.mem.Allocator, entries: []const FundingEntry) !void
         const ann_s = std.fmt.bufPrint(&cell_bufs[i].ann, "{d:.1}%", .{ann_pct}) catch "?";
         cell_bufs[i].ann_len = ann_s.len;
 
+        const mark_s = e.mark.normalize().toString(&cell_bufs[i].mark) catch "0";
+        cell_bufs[i].mark_len = mark_s.len;
+
         const color: BufMod.Style = if (e.funding < 0) .{ .fg = .red } else if (e.funding > 0) .{ .fg = .green } else .{ .fg = .grey };
 
         items[i] = .{
-            .cells = cellsInit(&.{ e.name, cell_bufs[i].rate[0..cell_bufs[i].rate_len], cell_bufs[i].ann[0..cell_bufs[i].ann_len], "", e.mark }),
+            .cells = cellsInit(&.{ e.name, cell_bufs[i].rate[0..cell_bufs[i].rate_len], cell_bufs[i].ann[0..cell_bufs[i].ann_len], "", cell_bufs[i].mark[0..cell_bufs[i].mark_len] }),
             .styles = stylesInit(&.{ .{ .fg = .cyan, .bold = true }, color, color, .{}, .{ .fg = .grey, .dim = true } }),
             .sort_key = @abs(e.funding),
         };
@@ -1828,8 +1799,8 @@ fn fundingRenderCell(buf: *BufMod, x: u16, y: u16, width: u16, item: *const List
 const FundingEntry = struct {
     name: []const u8,
     funding: f64,
-    oi: []const u8,
-    mark: []const u8,
+    oi: Decimal,
+    mark: Decimal,
 };
 
 const FundingData = struct {
@@ -1838,26 +1809,17 @@ const FundingData = struct {
     alloc_len: usize,
 };
 
-fn parseFundingData(allocator: std.mem.Allocator, result: anytype) !FundingData {
-    const val = try result.json();
-    if (val != .array or val.array.items.len < 2) return error.Overflow;
-
-    const meta = val.array.items[0];
-    const ctxs = val.array.items[1];
-    const universe = json_mod.getArray(meta, "universe") orelse return error.Overflow;
-    const ctx_arr = if (ctxs == .array) ctxs.array.items else return error.Overflow;
-
-    const limit = @min(universe.len, ctx_arr.len);
-    var entries = try allocator.alloc(FundingEntry, limit);
+fn parseFundingData(allocator: std.mem.Allocator, mac_entries: []const response.MetaAndAssetCtx) !FundingData {
+    var entries = try allocator.alloc(FundingEntry, mac_entries.len);
     var count: usize = 0;
 
-    for (0..limit) |i| {
-        const name = json_mod.getString(universe[i], "name") orelse continue;
-        const funding_str = json_mod.getString(ctx_arr[i], "funding") orelse continue;
-        const oi_str = json_mod.getString(ctx_arr[i], "openInterest") orelse "0";
-        const mark_str = json_mod.getString(ctx_arr[i], "markPx") orelse "0";
-        const f = std.fmt.parseFloat(f64, funding_str) catch continue;
-        entries[count] = .{ .name = name, .funding = f, .oi = oi_str, .mark = mark_str };
+    for (mac_entries) |e| {
+        entries[count] = .{
+            .name = e.meta.name,
+            .funding = decToF64(e.ctx.funding),
+            .oi = e.ctx.openInterest,
+            .mark = if (e.ctx.markPx) |mp| mp else Decimal.ZERO,
+        };
         count += 1;
     }
 
@@ -1867,7 +1829,7 @@ fn parseFundingData(allocator: std.mem.Allocator, result: anytype) !FundingData 
         }
     }.lessThan);
 
-    return .{ .entries = entries[0..count], .count = count, .alloc_len = limit };
+    return .{ .entries = entries[0..count], .count = count, .alloc_len = mac_entries.len };
 }
 
 pub fn book(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.BookArgs) !void {
@@ -1884,29 +1846,25 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     var coin_upper: [16]u8 = undefined;
     const coin = upperCoin(a.coin, &coin_upper);
 
-    var result = try client.l2Book(coin);
-    defer result.deinit();
-
     if (w.format == .json) {
+        var result = try client.l2Book(coin);
+        defer result.deinit();
         try w.jsonRaw(result.body);
         return;
     }
 
-    const val = try result.json();
-    const levels = json_mod.getArray(val, "levels") orelse {
+    var typed = client.getL2Book(coin) catch {
         try w.err("no book data");
         return;
     };
-    if (levels.len < 2) {
-        try w.err("invalid book data");
-        return;
-    }
+    defer typed.deinit();
+    const book_data = typed.value;
 
-    const bids_raw = if (levels[0] == .array) levels[0].array.items else return;
-    const asks_raw = if (levels[1] == .array) levels[1].array.items else return;
+    const bids_raw = book_data.levels[0];
+    const asks_raw = book_data.levels[1];
     const depth = @min(a.depth, @min(bids_raw.len, asks_raw.len));
 
-    const Level = struct { px: []const u8, sz: f64, sz_str: []const u8, cum: f64 };
+    const Level = struct { px: Decimal, sz: f64, cum: f64 };
     var bids = try allocator.alloc(Level, depth);
     defer allocator.free(bids);
     var asks = try allocator.alloc(Level, depth);
@@ -1915,21 +1873,13 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     var bid_cum: f64 = 0;
     var ask_cum: f64 = 0;
     for (0..depth) |i| {
-        const bid_sz_str = json_mod.getString(bids_raw[i], "sz") orelse "0";
-        const bid_sz = std.fmt.parseFloat(f64, bid_sz_str) catch 0;
+        const bid_sz = decToF64(bids_raw[i].sz);
         bid_cum += bid_sz;
-        bids[i] = .{
-            .px = json_mod.getString(bids_raw[i], "px") orelse "0",
-            .sz = bid_sz, .sz_str = bid_sz_str, .cum = bid_cum,
-        };
+        bids[i] = .{ .px = bids_raw[i].px, .sz = bid_sz, .cum = bid_cum };
 
-        const ask_sz_str = json_mod.getString(asks_raw[i], "sz") orelse "0";
-        const ask_sz = std.fmt.parseFloat(f64, ask_sz_str) catch 0;
+        const ask_sz = decToF64(asks_raw[i].sz);
         ask_cum += ask_sz;
-        asks[i] = .{
-            .px = json_mod.getString(asks_raw[i], "px") orelse "0",
-            .sz = ask_sz, .sz_str = ask_sz_str, .cum = ask_cum,
-        };
+        asks[i] = .{ .px = asks_raw[i].px, .sz = ask_sz, .cum = ask_cum };
     }
     const max_cum = @max(bid_cum, ask_cum);
 
@@ -1969,10 +1919,12 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
 
         var buf: [512]u8 = undefined;
         var p: usize = 0;
+        var ak_px_buf: [32]u8 = undefined;
+        var ak_sz_buf: [32]u8 = undefined;
         if (is_tty) p = emit(&buf, p, Style.red);
-        p = rpad(&buf, p, ak.px, px_w);
+        p = rpad(&buf, p, decFmt(ak.px, &ak_px_buf), px_w);
         if (is_tty) p = emit(&buf, p, Style.reset);
-        p = lpad(&buf, p, ak.sz_str, sz_w);
+        p = lpad(&buf, p, floatFmt(&ak_sz_buf, ak.sz), sz_w);
         if (is_tty) p = emit(&buf, p, Style.dim);
         p = lpad(&buf, p, cum_str, cum_w);
         if (is_tty) p = emit(&buf, p, Style.reset);
@@ -1985,8 +1937,8 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     }
 
     if (depth > 0) {
-        const bid_f = std.fmt.parseFloat(f64, bids[0].px) catch 0;
-        const ask_f = std.fmt.parseFloat(f64, asks[0].px) catch 0;
+        const bid_f = decToF64(bids[0].px);
+        const ask_f = decToF64(asks[0].px);
         const spread = ask_f - bid_f;
         const spread_pct = if (bid_f > 0) spread / bid_f * 100 else 0;
         var sbuf: [64]u8 = undefined;
@@ -2016,10 +1968,12 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
 
         var buf: [512]u8 = undefined;
         var p: usize = 0;
+        var b_px_buf: [32]u8 = undefined;
+        var b_sz_buf: [32]u8 = undefined;
         if (is_tty) p = emit(&buf, p, Style.green);
-        p = rpad(&buf, p, b.px, px_w);
+        p = rpad(&buf, p, decFmt(b.px, &b_px_buf), px_w);
         if (is_tty) p = emit(&buf, p, Style.reset);
-        p = lpad(&buf, p, b.sz_str, sz_w);
+        p = lpad(&buf, p, floatFmt(&b_sz_buf, b.sz), sz_w);
         if (is_tty) p = emit(&buf, p, Style.dim);
         p = lpad(&buf, p, cum_str, cum_w);
         if (is_tty) p = emit(&buf, p, Style.reset);
@@ -2172,37 +2126,28 @@ fn bookLive(allocator: std.mem.Allocator, config: Config, a: args_mod.BookArgs) 
         };
         defer result.deinit();
 
-        const val = result.json() catch continue;
-        const levels = json_mod.getArray(val, "levels") orelse continue;
-        if (levels.len < 2) continue;
+        var typed = std.json.parseFromSlice(response.L2Book, allocator, result.body, response.ParseOpts) catch continue;
+        defer typed.deinit();
+        const book_data = typed.value;
 
-        const bids_raw = if (levels[0] == .array) levels[0].array.items else continue;
-        const asks_raw = if (levels[1] == .array) levels[1].array.items else continue;
+        const bids_bl = book_data.levels[0];
+        const asks_bl = book_data.levels[1];
+        const eff_depth = @min(depth, @min(bids_bl.len, asks_bl.len));
 
-        const eff_depth = @min(depth, @min(bids_raw.len, asks_raw.len));
-
-        const CumLevel = struct { px: []const u8, sz_str: []const u8, sz: f64, cum: f64 };
+        const CumLevel = struct { px: Decimal, sz: f64, cum: f64 };
         var bid_levels: [64]CumLevel = undefined;
         var ask_levels: [64]CumLevel = undefined;
         var bid_cum: f64 = 0;
         var ask_cum: f64 = 0;
 
         for (0..eff_depth) |i| {
-            const bid_sz_str = json_mod.getString(bids_raw[i], "sz") orelse "0";
-            const bid_sz = std.fmt.parseFloat(f64, bid_sz_str) catch 0;
+            const bid_sz = decToF64(bids_bl[i].sz);
             bid_cum += bid_sz;
-            bid_levels[i] = .{
-                .px = json_mod.getString(bids_raw[i], "px") orelse "0",
-                .sz_str = bid_sz_str, .sz = bid_sz, .cum = bid_cum,
-            };
+            bid_levels[i] = .{ .px = bids_bl[i].px, .sz = bid_sz, .cum = bid_cum };
 
-            const ask_sz_str = json_mod.getString(asks_raw[i], "sz") orelse "0";
-            const ask_sz = std.fmt.parseFloat(f64, ask_sz_str) catch 0;
+            const ask_sz = decToF64(asks_bl[i].sz);
             ask_cum += ask_sz;
-            ask_levels[i] = .{
-                .px = json_mod.getString(asks_raw[i], "px") orelse "0",
-                .sz_str = ask_sz_str, .sz = ask_sz, .cum = ask_cum,
-            };
+            ask_levels[i] = .{ .px = asks_bl[i].px, .sz = ask_sz, .cum = ask_cum };
         }
         const max_cum = @max(bid_cum, ask_cum);
 
@@ -2231,8 +2176,10 @@ fn bookLive(allocator: std.mem.Allocator, config: Config, a: args_mod.BookArgs) 
             ri -= 1;
             if (y >= h -| 2) break;
             const lv = ask_levels[ri];
-            buf.putStr(col_p, y, lv.px, bold_red);
-            buf.putStrRight(col_s, y, 10, lv.sz_str, white);
+            var apx_buf: [32]u8 = undefined;
+            var asz_buf: [32]u8 = undefined;
+            buf.putStr(col_p, y, decFmt(lv.px, &apx_buf), bold_red);
+            buf.putStrRight(col_s, y, 10, floatFmt(&asz_buf, lv.sz), white);
             var cb: [16]u8 = undefined;
             buf.putStrRight(col_c, y, 10, floatFmt(&cb, lv.cum), dim);
             if (bar_w > 0 and max_cum > 0) {
@@ -2242,8 +2189,8 @@ fn bookLive(allocator: std.mem.Allocator, config: Config, a: args_mod.BookArgs) 
         }
 
         if (show_depth > 0 and y < h -| 2) {
-            const bp = std.fmt.parseFloat(f64, bid_levels[0].px) catch 0;
-            const ap = std.fmt.parseFloat(f64, ask_levels[0].px) catch 0;
+            const bp = decToF64(bid_levels[0].px);
+            const ap = decToF64(ask_levels[0].px);
             const sp = ap - bp;
             const pct = if (bp > 0) sp / bp * 100 else 0;
             var sb: [48]u8 = undefined;
@@ -2257,8 +2204,10 @@ fn bookLive(allocator: std.mem.Allocator, config: Config, a: args_mod.BookArgs) 
         for (0..show_depth) |i| {
             if (y >= h -| 2) break;
             const lv = bid_levels[i];
-            buf.putStr(col_p, y, lv.px, bold_green);
-            buf.putStrRight(col_s, y, 10, lv.sz_str, white);
+            var bpx_buf: [32]u8 = undefined;
+            var bsz_buf: [32]u8 = undefined;
+            buf.putStr(col_p, y, decFmt(lv.px, &bpx_buf), bold_green);
+            buf.putStrRight(col_s, y, 10, floatFmt(&bsz_buf, lv.sz), white);
             var cb: [16]u8 = undefined;
             buf.putStrRight(col_c, y, 10, floatFmt(&cb, lv.cum), dim);
             if (bar_w > 0 and max_cum > 0) {
@@ -2325,26 +2274,14 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
     if (std.mem.indexOf(u8, coin, "/")) |slash| {
         const base = coin[0..slash];
         const quote = coin[slash + 1 ..];
-        var result = try client.spot();
-        defer result.deinit();
-        const val = try result.json();
-        const tokens = json_mod.getArray(val, "tokens") orelse return error.AssetNotFound;
-        _ = tokens;
-        const universe = json_mod.getArray(val, "universe") orelse return error.AssetNotFound;
-        for (universe) |item| {
-            const name = json_mod.getString(item, "name") orelse continue;
-            const pair_tokens = json_mod.getArray(item, "tokens") orelse continue;
-            if (pair_tokens.len >= 2) {
-            }
-            const idx = json_mod.getInt(u64, item, "index") orelse continue;
-            if (name.len > 0 and std.mem.indexOf(u8, name, "/") != null) {
-                // Check if base and quote match
-                if (std.mem.indexOf(u8, name, "/")) |ns| {
-                    const n_base = name[0..ns];
-                    const n_quote = name[ns + 1 ..];
-                    if (std.ascii.eqlIgnoreCase(n_base, base) and std.ascii.eqlIgnoreCase(n_quote, quote)) {
-                        return @intCast(idx);
-                    }
+        var typed = try client.getSpotMeta();
+        defer typed.deinit();
+        for (typed.value.universe) |pair| {
+            if (std.mem.indexOf(u8, pair.name, "/")) |ns| {
+                const n_base = pair.name[0..ns];
+                const n_quote = pair.name[ns + 1 ..];
+                if (std.ascii.eqlIgnoreCase(n_base, base) and std.ascii.eqlIgnoreCase(n_quote, quote)) {
+                    return @intCast(pair.index);
                 }
             }
         }
@@ -2354,29 +2291,22 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
     if (std.mem.indexOf(u8, coin, ":")) |colon| {
         const dex_name = coin[0..colon];
         const symbol = coin[colon + 1 ..];
-        var result = try client.perps(dex_name);
-        defer result.deinit();
-        const val = try result.json();
-        const universe = json_mod.getArray(val, "universe") orelse return error.AssetNotFound;
-        for (universe, 0..) |item, i| {
-            const name = json_mod.getString(item, "name") orelse continue;
-            if (std.ascii.eqlIgnoreCase(name, symbol)) return i;
-            if (std.mem.indexOf(u8, name, ":")) |nc| {
-                if (std.ascii.eqlIgnoreCase(name[nc + 1 ..], symbol)) return i;
+        var typed = try client.getPerps(dex_name);
+        defer typed.deinit();
+        for (typed.value.universe, 0..) |pm, i| {
+            if (std.ascii.eqlIgnoreCase(pm.name, symbol)) return i;
+            if (std.mem.indexOf(u8, pm.name, ":")) |nc| {
+                if (std.ascii.eqlIgnoreCase(pm.name[nc + 1 ..], symbol)) return i;
             }
         }
         return error.AssetNotFound;
     }
 
-    var result = try client.perps(null);
-    defer result.deinit();
+    var typed = try client.getPerps(null);
+    defer typed.deinit();
 
-    const val = try result.json();
-    const universe = json_mod.getArray(val, "universe") orelse return error.AssetNotFound;
-
-    for (universe, 0..) |item, i| {
-        const name = json_mod.getString(item, "name") orelse continue;
-        if (std.ascii.eqlIgnoreCase(name, coin)) return i;
+    for (typed.value.universe, 0..) |pm, i| {
+        if (std.ascii.eqlIgnoreCase(pm.name, coin)) return i;
     }
 
     return error.AssetNotFound;
@@ -2683,15 +2613,14 @@ pub fn markets(allocator: std.mem.Allocator, config: Config) !void {
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    var meta_result = try client.perps(null);
-    defer meta_result.deinit();
-    const meta_val = try meta_result.json();
+    var perps_typed = try client.getPerps(null);
+    defer perps_typed.deinit();
+    const universe = perps_typed.value.universe;
 
+    // allMids returns {coin: "price"} dict — use raw JSON (dynamic keys)
     var mids_result = try client.allMids(null);
     defer mids_result.deinit();
     const mids_val = try mids_result.json();
-
-    const universe = json_mod.getArray(meta_val, "universe") orelse return error.Overflow;
 
     const MarketRow = struct {
         name_buf: [16]u8 = undefined,
@@ -2709,27 +2638,10 @@ pub fn markets(allocator: std.mem.Allocator, config: Config) !void {
     var items: [MAX]ListW.Item = undefined;
     var count: usize = 0;
 
-    for (universe) |entry| {
+    for (universe) |pm| {
         if (count >= MAX) break;
-        const name = json_mod.getString(entry, "name") orelse continue;
-        const is_delisted = if (entry == .object) blk: {
-            const obj = entry.object;
-            break :blk if (obj.get("isDelisted")) |v| switch (v) {
-                .bool => |b| b,
-                else => false,
-            } else false;
-        } else false;
-        if (is_delisted) continue; // skip delisted
-
-        const lev = if (entry == .object) blk: {
-            if (entry.object.get("maxLeverage")) |v| {
-                break :blk switch (v) {
-                    .integer => |i| @as(u32, @intCast(i)),
-                    else => @as(u32, 3),
-                };
-            }
-            break :blk @as(u32, 3);
-        } else @as(u32, 3);
+        const name = pm.name;
+        if (pm.isDelisted) continue; // skip delisted
 
         const mid_str = if (mids_val == .object) (mids_val.object.get(name) orelse null) else null;
         const price_str = if (mid_str) |ms| switch (ms) {
@@ -2748,7 +2660,7 @@ pub fn markets(allocator: std.mem.Allocator, config: Config) !void {
         const p = smartFmt(&row.price_buf, price_f);
         row.price_len = p.len;
 
-        const l = std.fmt.bufPrint(&row.lev_buf, "{d}x", .{lev}) catch "?";
+        const l = std.fmt.bufPrint(&row.lev_buf, "{d}x", .{pm.maxLeverage}) catch "?";
         row.lev_len = l.len;
 
         const white = BufMod.Style{ .fg = .bright_white };
@@ -2809,83 +2721,56 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    // Grab mid price
+    // Grab mid price (allMids returns a JSON object {coin: "price", ...})
     var mids_result = try client.allMids(null);
     defer mids_result.deinit();
     const mids_val = try mids_result.json();
-
-    // For spot pairs (BASE/QUOTE), resolve to @index key for mids lookup
-    // and the actual coin name for book lookup
-    
-    
-    
-
-    
-    // Both mids and l2Book accept spot pair names directly (e.g. "PURR/USDC")
-
-    // Also grab the book for bid/ask spread
-    var book_result = try client.l2Book(a.coin);
-    defer book_result.deinit();
-    const book_val = try book_result.json();
-
     const mid_str = json_mod.getString(mids_val, a.coin);
+
+    // Grab book for bid/ask
+    var book_typed = client.getL2Book(a.coin) catch null;
+    defer if (book_typed) |*bt| bt.deinit();
+    const bl: ?[2][]response.BookLevel = if (book_typed) |bt| bt.value.levels else null;
 
     if (w.format == .json) {
         try w.print("{{\"coin\":\"{s}\"", .{a.coin});
-        if (mid_str) |m| try w.print(",\"mid\":{s}", .{m});
-        // Extract best bid/ask
-        if (json_mod.getArray(book_val, "levels")) |levels| {
-            if (levels.len > 0) if (levels[0] == .array) {
-                const bids = levels[0].array.items;
-                if (bids.len > 0) if (json_mod.getString(bids[0], "px")) |px| try w.print(",\"bid\":{s}", .{px});
-            };
-            if (levels.len > 1) if (levels[1] == .array) {
-                const asks = levels[1].array.items;
-                if (asks.len > 0) if (json_mod.getString(asks[0], "px")) |px| try w.print(",\"ask\":{s}", .{px});
-            };
+        if (mid_str) |m_s| try w.print(",\"mid\":{s}", .{m_s});
+        if (bl) |levels| {
+            if (levels[0].len > 0) { var bb: [32]u8 = undefined; try w.print(",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}); }
+            if (levels[1].len > 0) { var ab: [32]u8 = undefined; try w.print(",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}); }
         }
         try w.print("}}\n", .{});
         return;
     }
 
-    // Quiet: just the mid price
     if (w.quiet) {
-        if (mid_str) |m| try w.print("{s}\n", .{m});
+        if (mid_str) |m_s| try w.print("{s}\n", .{m_s});
         return;
     }
 
     try w.nl();
-    if (mid_str) |m| {
+    if (mid_str) |m_s| {
         try w.style(Style.muted);
         try w.print("  {s: <6}", .{a.coin});
         try w.style(Style.reset);
-        try w.styled(Style.bold_white, m);
+        try w.styled(Style.bold_white, m_s);
         try w.nl();
     } else {
         try w.err("coin not found");
         return;
     }
 
-    if (json_mod.getArray(book_val, "levels")) |levels| {
-        var bid_px: []const u8 = "-";
-        var bid_sz: []const u8 = "-";
-        var ask_px: []const u8 = "-";
-        var ask_sz: []const u8 = "-";
-
-        if (levels.len > 0) if (levels[0] == .array) {
-            const bids = levels[0].array.items;
-            if (bids.len > 0) {
-                bid_px = json_mod.getString(bids[0], "px") orelse "-";
-                bid_sz = json_mod.getString(bids[0], "sz") orelse "-";
-            }
-        };
-        if (levels.len > 1) if (levels[1] == .array) {
-            const asks = levels[1].array.items;
-            if (asks.len > 0) {
-                ask_px = json_mod.getString(asks[0], "px") orelse "-";
-                ask_sz = json_mod.getString(asks[0], "sz") orelse "-";
-            }
-        };
+    if (bl) |levels| {
+        var bid_px_buf: [32]u8 = undefined;
+        var bid_sz_buf: [32]u8 = undefined;
+        var ask_px_buf: [32]u8 = undefined;
+        var ask_sz_buf: [32]u8 = undefined;
+        const has_bid = levels[0].len > 0;
+        const has_ask = levels[1].len > 0;
+        const bid_px: []const u8 = if (has_bid) decFmt(levels[0][0].px, &bid_px_buf) else "-";
+        const bid_sz: []const u8 = if (has_bid) decFmt(levels[0][0].sz, &bid_sz_buf) else "-";
+        const ask_px: []const u8 = if (has_ask) decFmt(levels[1][0].px, &ask_px_buf) else "-";
+        const ask_sz: []const u8 = if (has_ask) decFmt(levels[1][0].sz, &ask_sz_buf) else "-";
 
         try w.style(Style.muted);
         try w.print("  bid   ", .{});
@@ -2894,9 +2779,8 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         try w.print("  {s: >10}", .{bid_sz});
         try w.style(Style.reset);
 
-        // Spread
-        const bid_f = std.fmt.parseFloat(f64, bid_px) catch 0;
-        const ask_f = std.fmt.parseFloat(f64, ask_px) catch 0;
+        const bid_f = if (has_bid) decToF64(levels[0][0].px) else 0;
+        const ask_f = if (has_ask) decToF64(levels[1][0].px) else 0;
         if (bid_f > 0 and ask_f > 0) {
             const spread = ask_f - bid_f;
             const spread_bps = spread / bid_f * 10000.0;
@@ -2933,47 +2817,41 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
             try w.err("address required (--address or config)");
             return;
         };
-        var result = try client.activeAssetData(addr, a.coin);
-        defer result.deinit();
-        const val = try result.json();
-
         if (w.format == .json) {
+            var result = try client.activeAssetData(addr, a.coin);
+            defer result.deinit();
             try w.print("{s}\n", .{result.body});
             return;
         }
 
+        var typed = try client.getActiveAssetData(addr, a.coin);
+        defer typed.deinit();
+        const aad = typed.value;
+
         try w.styled(output_mod.Style.bold, a.coin);
         try w.print(" leverage\n", .{});
 
-        if (val == .object) {
-            if (val.object.get("leverage")) |lev| {
-                if (json_mod.getInt(u64, lev, "value")) |v|
-                    try w.print("  current   {d}x", .{v})
-                else if (json_mod.getString(lev, "value")) |v|
-                    try w.print("  current   {s}x", .{v});
-                if (json_mod.getString(lev, "type")) |t|
-                    try w.print(" {s}", .{t});
+        {
+            if (aad.leverage) |lev| {
+                try w.print("  current   {d}x", .{lev.value});
+                try w.print(" {s}", .{lev.type});
                 try w.print("\n", .{});
-                if (json_mod.getString(lev, "rawUsd")) |r|
+                if (lev.rawVal) |r|
                     try w.print("  raw USD   {s}\n", .{r});
             }
-            if (json_mod.getString(val, "markPx")) |px|
-                try w.print("  mark      {s}\n", .{px});
-            if (val.object.get("maxTradeSzs")) |mts| {
-                if (mts == .array and mts.array.items.len >= 2) {
-                    const items = mts.array.items;
-                    const long_str = if (items[0] == .string) items[0].string else "?";
-                    const short_str = if (items[1] == .string) items[1].string else "?";
-                    try w.print("  max sz    {s} / {s}\n", .{ long_str, short_str });
-                }
+            if (aad.markPx) |px| {
+                var px_buf: [32]u8 = undefined;
+                try w.print("  mark      {s}\n", .{decFmt(px, &px_buf)});
             }
-            if (val.object.get("availableToTrade")) |avail| {
-                if (avail == .array and avail.array.items.len >= 2) {
-                    const items = avail.array.items;
-                    const long_str = if (items[0] == .string) items[0].string else "?";
-                    const short_str = if (items[1] == .string) items[1].string else "?";
-                    try w.print("  avail     {s} / {s}\n", .{ long_str, short_str });
-                }
+            if (aad.maxTradeSzs) |mts| {
+                var lb: [32]u8 = undefined;
+                var sb: [32]u8 = undefined;
+                try w.print("  max sz    {s} / {s}\n", .{ decFmt(mts[0], &lb), decFmt(mts[1], &sb) });
+            }
+            if (aad.availableToTrade) |avail| {
+                var alb: [32]u8 = undefined;
+                var asb: [32]u8 = undefined;
+                try w.print("  avail     {s} / {s}\n", .{ decFmt(avail[0], &alb), decFmt(avail[1], &asb) });
             }
         }
         return;
@@ -3015,53 +2893,49 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
 
     const addr = a.address orelse config.getAddress() orelse return error.MissingAddress;
 
-    // Fetch perp + spot in sequence (single client, not thread-safe for parallel)
-    var perp_result = try client.clearinghouseState(addr, a.dex);
-    defer perp_result.deinit();
-    const perp_val = try perp_result.json();
-
-    var spot_result = try client.spotClearinghouseState(addr);
-    defer spot_result.deinit();
-    const spot_val = try spot_result.json();
-
     if (w.format == .json) {
+        var perp_result = try client.clearinghouseState(addr, a.dex);
+        defer perp_result.deinit();
+        var spot_result = try client.spotClearinghouseState(addr);
+        defer spot_result.deinit();
         try w.print("{{\"perp\":{s},\"spot\":{s}}}\n", .{ perp_result.body, spot_result.body });
         return;
     }
 
-    // Account summary — Hero Number style
-    if (perp_val.object.get("marginSummary")) |ms| {
+    var perp_typed = try client.getClearinghouseState(addr, a.dex);
+    defer perp_typed.deinit();
+    const state = perp_typed.value;
+    const ms = state.marginSummary;
+
+    {
         try w.nl();
         try w.styled(Style.muted, "  PORTFOLIO\n\n");
-        if (json_mod.getString(ms, "accountValue")) |v| {
-            try w.print("  ", .{});
-            try w.styled(Style.bold_white, "$");
-            try w.styled(Style.bold_white, v);
-            try w.nl();
-        }
+        var av_buf: [32]u8 = undefined;
+        try w.print("  ", .{});
+        try w.styled(Style.bold_white, "$");
+        try w.styled(Style.bold_white, decFmt(ms.accountValue, &av_buf));
+        try w.nl();
         try w.nl();
 
-        // Compact stats row
         try w.style(Style.subtle);
         try w.print("  ", .{});
         var i: usize = 0;
         while (i < 52) : (i += 1) try w.print("\xe2\x94\x80", .{});
         try w.style(Style.reset);
         try w.nl();
+        var mu_buf: [32]u8 = undefined;
+        var wd_buf: [32]u8 = undefined;
         try w.style(Style.muted);
         try w.print("  margin ", .{});
         try w.style(Style.reset);
-        if (json_mod.getString(ms, "totalMarginUsed")) |v|
-            try w.styled(Style.white, v);
+        try w.styled(Style.white, decFmt(ms.totalMarginUsed, &mu_buf));
         try w.style(Style.muted);
         try w.print("  free ", .{});
         try w.style(Style.reset);
-        if (json_mod.getString(perp_val, "withdrawable")) |v|
-            try w.styled(Style.white, v);
+        try w.styled(Style.white, decFmt(state.withdrawable, &wd_buf));
 
-        // Inline health bar
-        const av_f2 = std.fmt.parseFloat(f64, json_mod.getString(ms, "accountValue") orelse "0") catch 0;
-        const mu_f2 = std.fmt.parseFloat(f64, json_mod.getString(ms, "totalMarginUsed") orelse "0") catch 0;
+        const av_f2 = decToF64(ms.accountValue);
+        const mu_f2 = decToF64(ms.totalMarginUsed);
         const health = if (mu_f2 > 0 and av_f2 > 0) @max(0.0, @min(100.0, 100.0 - (mu_f2 / av_f2 * 100.0))) else 100.0;
         const hc: []const u8 = if (health > 50) Style.bold_green else if (health > 25) Style.bold_yellow else Style.bold_red;
         try w.style(Style.muted);
@@ -3076,36 +2950,29 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
     }
 
     // Main positions
-    printPositions(w, perp_val, null) catch {};
+    printPositions(w, state.assetPositions, null) catch {};
 
     // HIP-3 DEX positions (--all-dexes)
     if (a.all_dexes) {
-        var dex_result = client.perpDexs() catch null;
-        if (dex_result) |*dr| {
-            defer dr.deinit();
-            const dv = dr.json() catch null;
-            if (dv) |dex_val| {
-                if (dex_val == .array) {
-                    for (dex_val.array.items) |item| {
-                        const dex_name = json_mod.getString(item, "name") orelse continue;
-                        var dex_perp = client.clearinghouseState(addr, dex_name) catch continue;
-                        defer dex_perp.deinit();
-                        const dpv = dex_perp.json() catch continue;
-                        printPositions(w, dpv, dex_name) catch {};
-                    }
-                }
+        var dex_typed = client.getPerpDexs() catch null;
+        if (dex_typed) |*dt| {
+            defer dt.deinit();
+            for (dt.value) |dex| {
+                var dex_state = client.getClearinghouseState(addr, dex.name) catch continue;
+                defer dex_state.deinit();
+                printPositions(w, dex_state.value.assetPositions, dex.name) catch {};
             }
         }
     }
 
     // Spot balances with proportion bars
-    if (json_mod.getArray(spot_val, "balances")) |balances| {
-        // Find max balance for bar scaling
+    var spot_typed = client.getSpotBalances(addr) catch null;
+    defer if (spot_typed) |*st| st.deinit();
+    if (spot_typed) |st| {
         var max_bal: f64 = 0;
         var nz_count: usize = 0;
-        for (balances) |b| {
-            const ts = json_mod.getString(b, "total") orelse continue;
-            const tf = std.fmt.parseFloat(f64, ts) catch continue;
+        for (st.value.balances) |b| {
+            const tf = decToF64(b.total);
             if (tf == 0) continue;
             max_bal = @max(max_bal, tf);
             nz_count += 1;
@@ -3120,26 +2987,20 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
             try w.tableHeader(&hdr);
             try w.panelSep();
 
-            for (balances) |b| {
-                const total_str = json_mod.getString(b, "total") orelse continue;
-                const total_f = std.fmt.parseFloat(f64, total_str) catch continue;
+            for (st.value.balances) |b| {
+                const total_f = decToF64(b.total);
                 if (total_f == 0) continue;
-                const token = json_mod.getString(b, "coin") orelse "?";
-
-                // Format balance uniformly
                 var fmt_buf: [32]u8 = undefined;
                 const formatted = smartFmt(&fmt_buf, total_f);
-
-                try emitSpotRow(w, token, formatted, total_f, max_bal);
+                try emitSpotRow(w, b.coin, formatted, total_f, max_bal);
             }
             try w.footer();
         }
     }
-
 }
 
-fn printPositions(w: *Writer, perp_val: std.json.Value, dex_name: ?[]const u8) !void {
-    if (json_mod.getArray(perp_val, "assetPositions")) |asset_positions| {
+fn printPositions(w: *Writer, asset_positions: []const response.AssetPosition, dex_name: ?[]const u8) !void {
+    {
         var title_buf: [64]u8 = undefined;
         const title = if (dex_name) |dn|
             std.fmt.bufPrint(&title_buf, "POSITIONS \xc2\xb7 {s}", .{dn}) catch "POSITIONS"
@@ -3158,31 +3019,27 @@ fn printPositions(w: *Writer, perp_val: std.json.Value, dex_name: ?[]const u8) !
 
         var has_any = false;
         for (asset_positions) |ap| {
-            const pos_obj = if (ap.object.get("position")) |p| p else continue;
-            const szi = json_mod.getString(pos_obj, "szi") orelse continue;
-            const szi_f = std.fmt.parseFloat(f64, szi) catch continue;
+            const p = ap.position;
+            const szi_f = decToF64(p.szi);
             if (szi_f == 0) continue;
             has_any = true;
-            const coin = json_mod.getString(pos_obj, "coin") orelse "?";
-            const entry = json_mod.getString(pos_obj, "entryPx") orelse "-";
-            const pnl_s = json_mod.getString(pos_obj, "unrealizedPnl") orelse "-";
+            var szi_buf: [32]u8 = undefined;
+            var entry_buf: [32]u8 = undefined;
+            var pnl_buf: [32]u8 = undefined;
             const side_s: []const u8 = if (szi_f > 0) "LONG" else "SHORT";
             const side_c: []const u8 = if (szi_f > 0) Style.green else Style.red;
-            // Abs size
             var abs_buf: [32]u8 = undefined;
-            const abs_s = if (szi_f < 0)
-                std.fmt.bufPrint(&abs_buf, "{d}", .{-szi_f}) catch szi
-            else
-                szi;
-            // PnL color
-            const pnl_f = std.fmt.parseFloat(f64, pnl_s) catch 0;
+            const abs_s = std.fmt.bufPrint(&abs_buf, "{d}", .{@abs(szi_f)}) catch decFmt(p.szi, &szi_buf);
+            const entry_s = if (p.entryPx) |ep| decFmt(ep, &entry_buf) else "-";
+            const pnl_s = if (p.unrealizedPnl) |up| decFmt(up, &pnl_buf) else "-";
+            const pnl_f = if (p.unrealizedPnl) |up| decToF64(up) else 0;
             const pnl_c: []const u8 = if (pnl_f > 0) Style.bold_green else if (pnl_f < 0) Style.bold_red else Style.muted;
 
             const cols = [_]Column{
-                .{ .text = coin, .width = 8, .color = Style.bold_cyan },
+                .{ .text = p.coin, .width = 8, .color = Style.bold_cyan },
                 .{ .text = side_s, .width = 6, .color = side_c },
                 .{ .text = abs_s, .width = 12, .align_right = true },
-                .{ .text = entry, .width = 10, .align_right = true, .color = Style.muted },
+                .{ .text = entry_s, .width = 10, .align_right = true, .color = Style.muted },
                 .{ .text = pnl_s, .width = 14, .align_right = true, .color = pnl_c },
             };
             try w.tableRow(&cols);
@@ -3205,29 +3062,23 @@ pub fn referralCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     switch (a.action) {
         .status => {
             const addr = config.getAddress() orelse return error.MissingAddress;
-            var result = try client.referral(addr);
-            defer result.deinit();
-
             if (w.format == .json) {
+                var result = try client.referral(addr);
+                defer result.deinit();
                 try w.print("{s}\n", .{result.body});
                 return;
             }
 
-            const val = try result.json();
-            if (val == .object) {
-                if (json_mod.getString(val, "referredBy")) |r|
-                    try w.print("referred by   {s}\n", .{r})
-                else
-                    try w.print("referred by   (none)\n", .{});
-                if (json_mod.getString(val, "cumVlm")) |v|
-                    try w.print("referral vol  ${s}\n", .{v});
-                if (json_mod.getString(val, "unclaimedRewards")) |v|
-                    try w.print("unclaimed     ${s}\n", .{v});
-                if (json_mod.getString(val, "claimedRewards")) |v|
-                    try w.print("claimed       ${s}\n", .{v});
-            } else {
-                try w.print("no referral info\n", .{});
-            }
+            var typed = try client.getReferral(addr);
+            defer typed.deinit();
+            const ref = typed.value;
+            if (ref.referredBy) |r|
+                try w.print("referred by   {s}\n", .{r})
+            else
+                try w.print("referred by   (none)\n", .{});
+            if (ref.cumVlm) |v| { var b: [32]u8 = undefined; try w.print("referral vol  ${s}\n", .{decFmt(v, &b)}); }
+            if (ref.unclaimedRewards) |v| { var b: [32]u8 = undefined; try w.print("unclaimed     ${s}\n", .{decFmt(v, &b)}); }
+            if (ref.claimedRewards) |v| { var b: [32]u8 = undefined; try w.print("claimed       ${s}\n", .{decFmt(v, &b)}); }
         },
         .set => {
             const code = a.code orelse {
@@ -3290,12 +3141,12 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
             continue;
         };
         defer book_result.deinit();
-        const bv = book_result.json() catch continue;
-        const levels = json_mod.getArray(bv, "levels") orelse continue;
+        var book_typed = std.json.parseFromSlice(response.L2Book, allocator, book_result.body, response.ParseOpts) catch continue;
+        defer book_typed.deinit();
 
         // Get best price + apply slippage
         const slippage_mult: f64 = if (is_buy) 1.0 + a.slippage_pct / 100.0 else 1.0 - a.slippage_pct / 100.0;
-        const best_px = getBestPrice(levels, is_buy) orelse continue;
+        const best_px = getBestPrice(book_typed.value.levels, is_buy) orelse continue;
         const slip_px = best_px * slippage_mult;
 
         var px_buf: [32]u8 = undefined;
@@ -3389,14 +3240,11 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     }
 }
 
-fn getBestPrice(levels: []const std.json.Value, is_buy: bool) ?f64 {
+fn getBestPrice(book_levels: [2][]response.BookLevel, is_buy: bool) ?f64 {
     const side_idx: usize = if (is_buy) 1 else 0; // asks for buy, bids for sell
-    if (levels.len <= side_idx) return null;
-    if (levels[side_idx] != .array) return null;
-    const side = levels[side_idx].array.items;
+    const side = book_levels[side_idx];
     if (side.len == 0) return null;
-    const px_str = json_mod.getString(side[0], "px") orelse return null;
-    return std.fmt.parseFloat(f64, px_str) catch null;
+    return decToF64(side[0].px);
 }
 
 fn parseDuration(s: []const u8) ?u64 {
@@ -3537,11 +3385,9 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
 
         if (!found_price) {
             // Market order — get BBO
-            var book_result = client.l2Book(coin) catch continue;
-            defer book_result.deinit();
-            const bv = book_result.json() catch continue;
-            const levels = json_mod.getArray(bv, "levels") orelse continue;
-            const best = getBestPrice(levels, is_buy) orelse continue;
+            var book_typed = client.getL2Book(coin) catch continue;
+            defer book_typed.deinit();
+            const best = getBestPrice(book_typed.value.levels, is_buy) orelse continue;
             const slip = if (is_buy) best * 1.01 else best * 0.99;
             var sb: [32]u8 = undefined;
             limit_px = Decimal.fromString(slippageFmt(&sb, slip)) catch continue;
