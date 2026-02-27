@@ -8,11 +8,6 @@ const output_mod = @import("output.zig");
 const keystore = @import("keystore.zig");
 const client_mod = hyperzig.hypercore.client;
 const response = hyperzig.hypercore.response;
-
-/// Parse typed struct from raw InfoResult body. Caller must deinit().
-fn parseTyped(comptime T: type, alloc: std.mem.Allocator, result: *Client.InfoResult) ?std.json.Parsed(T) {
-    return std.json.parseFromSlice(T, alloc, result.body, response.ParseOpts) catch null;
-}
 const types = hyperzig.hypercore.types;
 const signing = hyperzig.hypercore.signing;
 const json_mod = hyperzig.hypercore.json;
@@ -486,23 +481,15 @@ pub fn positions(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
     defer client.deinit();
 
     const addr = a.address orelse config.getAddress() orelse return error.MissingAddress;
-    var result = try client.clearinghouseState(addr, a.dex);
-    defer result.deinit();
 
     if (w.format == .json and !a.all_dexes) {
-        try w.jsonRaw(result.body);
+        var raw = try client.clearinghouseState(addr, a.dex);
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    // Typed parse for display, raw for JSON passthrough
-    var typed = client.getClearinghouseState(addr, null) catch {
-        // Fall back to raw
-        const val = try result.json();
-        try w.heading("POSITIONS");
-        try w.print("parse error\n", .{});
-        _ = val;
-        return;
-    };
+    var typed = try client.getClearinghouseState(addr, a.dex);
     defer typed.deinit();
     const state = typed.value;
 
@@ -613,20 +600,17 @@ pub fn orders(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     defer client.deinit();
 
     const addr = a.address orelse config.getAddress() orelse return error.MissingAddress;
-    var result = try client.openOrders(addr, a.dex);
-    defer result.deinit();
 
     if (w.format == .json) {
-        try w.jsonRaw(result.body);
+        var raw = try client.openOrders(addr, a.dex);
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    var parsed = parseTyped([]response.BasicOrder, allocator, &result) orelse {
-        try w.styled(Style.dim, "  No orders found\n");
-        return;
-    };
-    defer parsed.deinit();
-    const open_orders = parsed.value;
+    var typed = try client.getOpenOrders(addr, a.dex);
+    defer typed.deinit();
+    const open_orders = typed.value;
 
     try w.heading("OPEN ORDERS");
     const hdr = [_]Column{
@@ -663,18 +647,15 @@ pub fn fills(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     defer client.deinit();
 
     const addr = a.address orelse config.getAddress() orelse return error.MissingAddress;
-    var result = try client.userFills(addr);
-    defer result.deinit();
 
     if (w.format == .json) {
-        try w.jsonRaw(result.body);
+        var raw = try client.userFills(addr);
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    var typed = parseTyped([]response.Fill, allocator, &result) orelse {
-        try w.styled(Style.dim, "  No fills found\n");
-        return;
-    };
+    var typed = try client.getUserFills(addr);
     defer typed.deinit();
 
     try w.heading("RECENT FILLS");
@@ -717,20 +698,16 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
 
     const addr = a.address orelse config.getAddress() orelse return error.MissingAddress;
 
-    var spot_result = try client.spotBalances(addr);
-    defer spot_result.deinit();
-    var perp_result = try client.clearinghouseState(addr, a.dex);
-    defer perp_result.deinit();
-
     if (w.format == .json) {
-        try w.print("{{\"spot\":{s},\"perp\":{s}}}\n", .{ spot_result.body, perp_result.body });
+        var spot_raw = try client.spotBalances(addr);
+        defer spot_raw.deinit();
+        var perp_raw = try client.clearinghouseState(addr, a.dex);
+        defer perp_raw.deinit();
+        try w.print("{{\"spot\":{s},\"perp\":{s}}}\n", .{ spot_raw.body, perp_raw.body });
         return;
     }
 
-    var perp_typed = parseTyped(response.ClearinghouseState, allocator, &perp_result) orelse {
-        try w.err("Failed to parse clearinghouse state");
-        return;
-    };
+    var perp_typed = try client.getClearinghouseState(addr, a.dex);
     defer perp_typed.deinit();
     const state = perp_typed.value;
     const m = state.marginSummary;
@@ -784,7 +761,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
     }
     try w.nl();
 
-    var spot_typed = parseTyped(response.SpotClearinghouseState, allocator, &spot_result) orelse {
+    var spot_typed = client.getSpotBalances(addr) catch {
         try w.nl();
         return;
     };
@@ -851,18 +828,14 @@ pub fn perps(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    var result = try client.perps(a.dex);
-    defer result.deinit();
-
     if (w.format == .json) {
-        try w.jsonRaw(result.body);
+        var raw = try client.perps(a.dex);
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    var typed = parseTyped(response.PerpUniverse, allocator, &result) orelse {
-        try w.styled(Style.dim, "  No perp markets found\n");
-        return;
-    };
+    var typed = try client.getPerps(a.dex);
     defer typed.deinit();
     const universe = typed.value.universe;
 
@@ -959,18 +932,14 @@ pub fn dexes(allocator: std.mem.Allocator, w: *Writer, config: Config) !void {
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    var result = try client.perpDexs();
-    defer result.deinit();
-
     if (w.format == .json) {
-        try w.jsonRaw(result.body);
+        var raw = try client.perpDexs();
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    var typed = parseTyped([]response.DexInfo, allocator, &result) orelse {
-        try w.styled(Style.dim, "  No DEXes found\n");
-        return;
-    };
+    var typed = try client.getDexInfos();
     defer typed.deinit();
 
     try w.heading("HIP-3 DEXES");
@@ -1014,18 +983,14 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    var result = try client.spot();
-    defer result.deinit();
-
     if (w.format == .json) {
-        try w.jsonRaw(result.body);
+        var raw = try client.spot();
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
         return;
     }
 
-    var typed = parseTyped(response.SpotMeta, allocator, &result) orelse {
-        try w.styled(Style.dim, "  No spot markets found\n");
-        return;
-    };
+    var typed = try client.getSpotMeta();
     defer typed.deinit();
     const tokens = typed.value.tokens;
 
