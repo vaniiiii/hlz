@@ -1,4 +1,4 @@
-//! `hl` — Hyperliquid CLI.
+//! `hlz` — Hyperliquid CLI.
 
 const std = @import("std");
 
@@ -9,7 +9,7 @@ const commands = @import("commands.zig");
 const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 // Exit codes (documented in --help, stable contract)
 const EXIT_OK: u8 = 0;
@@ -26,9 +26,9 @@ pub fn main() !void {
     const result = args_mod.parse(allocator) catch |e| {
         var w = output_mod.Writer.init(.pretty);
         switch (e) {
-            error.MissingArgument => try w.err("missing required argument. Run `hl help` for usage."),
-            error.UnknownCommand => try w.err("unknown command. Run `hl help` for usage."),
-            error.InvalidFlag => try w.err("invalid flag value. Run `hl help` for usage."),
+            error.MissingArgument => try w.err("missing required argument. Run `hlz help` for usage."),
+            error.UnknownCommand => try w.err("unknown command. Run `hlz help` for usage."),
+            error.InvalidFlag => try w.err("invalid flag value. Run `hlz help` for usage."),
         }
         std.process.exit(EXIT_USAGE);
     };
@@ -105,7 +105,7 @@ pub fn main() !void {
 fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
     const code: u8 = switch (e) {
         error.MissingKey, error.MissingAddress => EXIT_AUTH,
-        error.MissingArgument => EXIT_USAGE,
+        error.MissingArgument, error.InvalidFlag => EXIT_USAGE,
         error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable => EXIT_NETWORK,
         else => EXIT_ERROR,
     };
@@ -120,8 +120,10 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
         const hint = switch (e) {
             error.MissingKey => "set HL_KEY env var or pass --key",
             error.MissingAddress => "set HL_ADDRESS env var or pass --address",
-            error.MissingArgument => "run `hl help` for usage",
+            error.MissingArgument => "run `hlz help` for usage",
             error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
+            error.CommandFailed => "",
+            error.InvalidFlag => "check flag values",
             else => "",
         };
         const ms = w.elapsedMs();
@@ -297,8 +299,8 @@ fn printHelp(w: *output_mod.Writer) !void {
         \\  hlz cancel ETH                           Cancel all ETH orders
         \\  hlz stream trades BTC                    Real-time BTC trades
         \\  hlz mids --json | jq .BTC                Pipe mid price
-        \\  HL_OUTPUT=json hl positions              Agent-friendly default
-        \\  echo '["buy BTC 0.1 @95000"]' | hl batch --stdin  Pipe orders
+        \\  HL_OUTPUT=json hlz positions              Agent-friendly default
+        \\  echo '["buy BTC 0.1 @95000"]' | hlz batch --stdin  Pipe orders
         \\
         \\
     , .{});

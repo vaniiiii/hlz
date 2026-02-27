@@ -567,7 +567,7 @@ fn parseReferral(args: []const []const u8) ReferralArgs {
     } else if (args.len >= 1 and std.mem.eql(u8, args[0], "status")) {
         result.action = .status;
     } else if (args.len >= 1 and !std.mem.startsWith(u8, args[0], "--")) {
-        // `hl referral MYCODE` = shorthand for set
+        // `hlz referral MYCODE` = shorthand for set
         result.action = .set;
         result.code = args[0];
     }

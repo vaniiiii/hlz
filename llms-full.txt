@@ -351,7 +351,7 @@ hlz mids --page 2           # Page 2
 hlz mids BTC                # Just BTC
 
 # Pipe to jq for custom filtering
-hlz mids --json | jq '.[] | select(.mid > 1000)'
+hlz mids --json | jq '.BTC'
 ```
 
 ## `hlz funding [--top N]`

@@ -27,6 +27,8 @@ pub const CmdError = client_mod.ClientError || config_mod.ConfigError || error{
     MissingAddress,
     MissingKey,
     AssetNotFound,
+    CommandFailed,
+    InvalidFlag,
 };
 
 var stream_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -100,35 +102,35 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
         // For ls, no password needed
         if (a.action == .ls) return keysLs(allocator, w);
         if (a.action == .rm) return keysRm(w, a.name orelse {
-            try w.err("usage: hl keys rm <name>");
-            return;
+            try w.err("usage: hlz keys rm <name>");
+            return error.MissingArgument;
         });
         if (a.action == .default) return keysDefault(w, a.name orelse {
-            try w.err("usage: hl keys default <name>");
-            return;
+            try w.err("usage: hlz keys default <name>");
+            return error.MissingArgument;
         });
         try w.err("password required: --password <PASS> or HL_PASSWORD env");
-        return;
+        return error.MissingKey;
     };
 
     switch (a.action) {
         .ls => return keysLs(allocator, w),
         .new => {
             const name = a.name orelse {
-                try w.err("usage: hl keys new <name> --password <PASS>");
-                return;
+                try w.err("usage: hlz keys new <name> --password <PASS>");
+                return error.MissingArgument;
             };
             // Generate random 32-byte private key
             var priv: [32]u8 = undefined;
             std.crypto.random.bytes(&priv);
             const json = keystore.encrypt(allocator, priv, password) catch |e| {
                 try w.errFmt("encrypt: {s}", .{@errorName(e)});
-                return;
+                return error.CommandFailed;
             };
             defer allocator.free(json);
             keystore.save(name, json) catch |e| {
                 try w.errFmt("save: {s}", .{@errorName(e)});
-                return;
+                return error.CommandFailed;
             };
             const signer = Signer.init(priv) catch return;
             var addr_buf: [42]u8 = undefined;
@@ -155,26 +157,26 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
         },
         .import_ => {
             const name = a.name orelse {
-                try w.err("usage: hl keys import <name> --private-key <HEX> --password <PASS>");
-                return;
+                try w.err("usage: hlz keys import <name> --private-key <HEX> --password <PASS>");
+                return error.MissingArgument;
             };
             const hex = a.key_hex orelse std.posix.getenv("HL_KEY") orelse {
                 try w.err("provide key: --private-key <HEX> or HL_KEY env");
-                return;
+                return error.MissingKey;
             };
             const signer = Signer.fromHex(hex) catch {
                 try w.err("invalid private key hex");
-                return;
+                return error.MissingKey;
             };
             var priv: [32]u8 = signer.private_key;
             const json = keystore.encrypt(allocator, priv, password) catch |e| {
                 try w.errFmt("encrypt: {s}", .{@errorName(e)});
-                return;
+                return error.CommandFailed;
             };
             defer allocator.free(json);
             keystore.save(name, json) catch |e| {
                 try w.errFmt("save: {s}", .{@errorName(e)});
-                return;
+                return error.CommandFailed;
             };
             @memset(&priv, 0);
             var addr_buf: [42]u8 = undefined;
@@ -194,12 +196,12 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
         },
         .export_ => {
             const name = a.name orelse {
-                try w.err("usage: hl keys export <name> --password <PASS>");
-                return;
+                try w.err("usage: hlz keys export <name> --password <PASS>");
+                return error.MissingArgument;
             };
             const data = keystore.load(allocator, name) catch {
                 try w.errFmt("key \"{s}\" not found", .{name});
-                return;
+                return error.CommandFailed;
             };
             defer allocator.free(data);
             var priv = keystore.decrypt(allocator, data, password) catch |e| {
@@ -229,15 +231,15 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
         },
         .rm => {
             const name = a.name orelse {
-                try w.err("usage: hl keys rm <name>");
-                return;
+                try w.err("usage: hlz keys rm <name>");
+                return error.MissingArgument;
             };
             return keysRm(w, name);
         },
         .default => {
             const name = a.name orelse {
-                try w.err("usage: hl keys default <name>");
-                return;
+                try w.err("usage: hlz keys default <name>");
+                return error.MissingArgument;
             };
             return keysDefault(w, name);
         },
@@ -247,7 +249,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
 fn keysLs(allocator: std.mem.Allocator, w: *Writer) !void {
     const entries = keystore.list(allocator) catch {
         try w.err("failed to list keys");
-        return;
+        return error.CommandFailed;
     };
     defer allocator.free(entries);
 
@@ -255,7 +257,7 @@ fn keysLs(allocator: std.mem.Allocator, w: *Writer) !void {
         if (w.format == .json) {
             try w.jsonRaw("[]");
         } else {
-            try w.styled(Style.muted, "  no keys. Run: hl keys new <name> --password <PASS>\n");
+            try w.styled(Style.muted, "  no keys. Run: hlz keys new <name> --password <PASS>\n");
         }
         return;
     }
@@ -293,7 +295,7 @@ fn keysLs(allocator: std.mem.Allocator, w: *Writer) !void {
 fn keysRm(w: *Writer, name: []const u8) !void {
     keystore.remove(name) catch {
         try w.errFmt("key \"{s}\" not found", .{name});
-        return;
+        return error.CommandFailed;
     };
     if (w.format == .json) {
         try w.jsonFmt("{{\"status\":\"removed\",\"name\":\"{s}\"}}", .{name});
@@ -309,15 +311,15 @@ fn keysDefault(w: *Writer, name: []const u8) !void {
     var pbuf: [576]u8 = undefined;
     const kpath = std.fmt.bufPrint(&pbuf, "{s}/.hl/keys/{s}.json", .{ home, name }) catch {
         try w.errFmt("key \"{s}\" not found", .{name});
-        return;
+        return error.CommandFailed;
     };
     std.fs.cwd().access(kpath, .{}) catch {
         try w.errFmt("key \"{s}\" not found", .{name});
-        return;
+        return error.CommandFailed;
     };
     keystore.setDefault(name) catch {
         try w.err("failed to set default");
-        return;
+        return error.CommandFailed;
     };
     if (w.format == .json) {
         try w.jsonFmt("{{\"status\":\"default\",\"name\":\"{s}\"}}", .{name});
@@ -329,21 +331,21 @@ fn keysDefault(w: *Writer, name: []const u8) !void {
 
 pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.ApproveAgentArgs) !void {
     const agent_addr = a.agent_address orelse {
-        try w.err("usage: hl approve-agent <ADDRESS> [--name <NAME>]");
+        try w.err("usage: hlz approve-agent <ADDRESS> [--name <NAME>]");
         try w.nl();
         try w.styled(Style.muted, "  Or approve via web UI:\n");
         const url: []const u8 = if (config.chain == .mainnet) "https://app.hyperliquid.xyz/API" else "https://app.hyperliquid-testnet.xyz/API";
         try w.print("  {s}\n", .{url});
-        return;
+        return error.MissingArgument;
     };
-    const key = config.key_hex orelse { try w.err("private key required"); return; };
-    const signer = Signer.fromHex(key) catch { try w.err("invalid key"); return; };
+    const key = config.key_hex orelse return error.MissingKey;
+    const signer = Signer.fromHex(key) catch return error.MissingKey;
     var client = switch (config.chain) { .mainnet => Client.mainnet(allocator), .testnet => Client.testnet(allocator) };
     defer client.deinit();
     const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
     var result = client.approveAgent(signer, agent_addr, a.agent_name, nonce) catch |e| {
         try w.errFmt("approve failed: {s}", .{@errorName(e)});
-        return;
+        return error.CommandFailed;
     };
     defer result.deinit();
     if (result.isOk() catch false) {
@@ -354,9 +356,13 @@ pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a:
             try w.print("  {s}\n", .{agent_addr});
         }
     } else {
-        const val = result.json() catch { try w.err("Agent approval rejected"); return; };
+        const val = result.json() catch {
+            try w.err("Agent approval rejected");
+            return error.CommandFailed;
+        };
         const resp = json_mod.getString(val, "response") orelse "rejected";
         try w.errFmt("Approval failed: {s}", .{resp});
+        return error.CommandFailed;
     }
 }
 
@@ -383,26 +389,74 @@ pub fn mids(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     var result = try client.allMids(a.dex);
     defer result.deinit();
 
-    if (w.format == .json) {
-        try w.jsonRaw(result.body);
-        return;
-    }
-
     const val = try result.json();
     if (val != .object) return;
 
-    const MidEntry = struct { coin: []const u8, mid: []const u8 };
+    // Resolve @index → human-readable spot names
+    var spot_names: [512][48]u8 = undefined;
+    var spot_count: usize = 0;
+    if (hasAtKeys(val)) {
+        var spot_result = client.getSpotMeta() catch null;
+        defer if (spot_result) |*sr| sr.deinit();
+        if (spot_result) |sr| {
+            for (sr.value.tokens, 0..) |t, i| {
+                if (i >= 512) break;
+                const max_name = 48 - "/USDC".len - 1; // room for suffix + null
+                const name_len = @min(t.name.len, max_name);
+                @memcpy(spot_names[i][0..name_len], t.name[0..name_len]);
+                const suffix = "/USDC";
+                @memcpy(spot_names[i][name_len .. name_len + suffix.len], suffix);
+                spot_names[i][name_len + suffix.len] = 0;
+                spot_count = i + 1;
+            }
+        }
+    }
+
+    const MidEntry = struct { coin: []const u8, mid: []const u8, resolved: ?[]const u8 };
     var entries = try allocator.alloc(MidEntry, val.object.count());
     defer allocator.free(entries);
     var total: usize = 0;
 
     var iter = val.object.iterator();
     while (iter.next()) |entry| {
+        const key = entry.key_ptr.*;
+        const resolved: ?[]const u8 = if (key.len > 1 and key[0] == '@') blk: {
+            const idx = std.fmt.parseInt(usize, key[1..], 10) catch break :blk null;
+            if (idx < spot_count) {
+                const name_buf = &spot_names[idx];
+                const len = std.mem.indexOfScalar(u8, name_buf, 0) orelse name_buf.len;
+                break :blk name_buf[0..len];
+            }
+            break :blk null;
+        } else null;
         entries[total] = .{
-            .coin = entry.key_ptr.*,
+            .coin = key,
             .mid = switch (entry.value_ptr.*) { .string => |s| s, else => "?" },
+            .resolved = resolved,
         };
         total += 1;
+    }
+
+    if (w.format == .json) {
+        // coin names are alphanumeric from HL API, no JSON escaping needed
+        const buf_size = total * 48 + 16;
+        var jbuf = try allocator.alloc(u8, buf_size);
+        defer allocator.free(jbuf);
+        var jlen: usize = 0;
+        jbuf[0] = '{';
+        jlen = 1;
+        var first = true;
+        for (entries[0..total]) |e| {
+            const display = e.resolved orelse e.coin;
+            if (a.coin) |f| { if (!containsInsensitive(display, f)) continue; }
+            if (!first) { jbuf[jlen] = ','; jlen += 1; }
+            jlen += (std.fmt.bufPrint(jbuf[jlen..], "\"{s}\":\"{s}\"", .{ display, e.mid }) catch return error.CommandFailed).len;
+            first = false;
+        }
+        jbuf[jlen] = '}';
+        jlen += 1;
+        try w.jsonRaw(jbuf[0..jlen]);
+        return;
     }
 
     if (w.is_tty and !a.all and a.page == 1 and a.coin == null) {
@@ -418,7 +472,8 @@ pub fn mids(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
 
     var filtered: usize = 0;
     for (entries[0..total]) |e| {
-        if (a.coin) |f| { if (!containsInsensitive(e.coin, f)) continue; }
+        const display = e.resolved orelse e.coin;
+        if (a.coin) |f| { if (!containsInsensitive(display, f)) continue; }
         entries[filtered] = e;
         filtered += 1;
     }
@@ -429,8 +484,9 @@ pub fn mids(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     const end = @min(start + limit, filtered);
 
     for (entries[start..end]) |e| {
+        const display = e.resolved orelse e.coin;
         const cols = [_]Column{
-            .{ .text = e.coin, .width = 14, .color = Style.cyan },
+            .{ .text = display, .width = 14, .color = Style.cyan },
             .{ .text = e.mid, .width = 16, .align_right = true, .color = Style.white },
         };
         try w.tableRow(&cols);
@@ -449,8 +505,9 @@ fn midsTui(allocator: std.mem.Allocator, config: Config, entries: anytype) !void
     const white = BufMod.Style{ .fg = .bright_white };
 
     for (0..n) |i| {
+        const display = entries[i].resolved orelse entries[i].coin;
         items[i] = .{
-            .cells = cellsInit(&.{ entries[i].coin, entries[i].mid }),
+            .cells = cellsInit(&.{ display, entries[i].mid }),
             .styles = stylesInit(&.{ cyan, white }),
             .sort_key = std.fmt.parseFloat(f64, entries[i].mid) catch 0,
         };
@@ -1250,6 +1307,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     const statuses = try response.parseOrderStatuses(allocator, val);
     defer allocator.free(statuses);
 
+    var failed = false;
     if (statuses.len > 0) {
         switch (statuses[0]) {
             .resting => |r| {
@@ -1263,8 +1321,8 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
                 try w.print(" avg={s}\n", .{decStr(f.avgPx, &avg_buf)});
             },
             .success => try w.success("accepted"),
-            .@"error" => |msg| try w.errFmt("rejected: {s}", .{msg}),
-            .unknown => try w.err("unknown response"),
+            .@"error" => |msg| { try w.errFmt("rejected: {s}", .{msg}); failed = true; },
+            .unknown => { try w.err("unknown response"); failed = true; },
         }
     } else {
         const status = response.parseResponseStatus(val);
@@ -1273,13 +1331,16 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
             .err => {
                 const err_msg = json_mod.getString(val, "response") orelse "unknown error";
                 try w.errFmt("rejected: {s}", .{err_msg});
+                failed = true;
             },
             .unknown => {
                 try w.err("unexpected response");
                 try w.print("{s}\n", .{result.body});
+                failed = true;
             },
         }
     }
+    if (failed) return error.CommandFailed;
 }
 
 pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.CancelArgs) !void {
@@ -1306,6 +1367,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         } else {
             try w.err("cancel-all failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
         return;
     }
@@ -1355,6 +1417,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         } else {
             try w.err("cancel failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
         return;
     }
@@ -1386,6 +1449,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         } else {
             try w.err("cancel by CLOID failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
         return;
     }
@@ -1413,10 +1477,10 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     if (statuses.len > 0) {
         switch (statuses[0]) {
             .success => try w.success("Order cancelled"),
-            .@"error" => |msg| try w.errFmt("cancel failed: {s}", .{msg}),
+            .@"error" => |msg| { try w.errFmt("cancel failed: {s}", .{msg}); return error.CommandFailed; },
             else => {
                 const ok = try result.isOk();
-                if (ok) try w.success("Cancel submitted") else try w.err("cancel failed");
+                if (ok) { try w.success("Cancel submitted"); } else { try w.err("cancel failed"); return error.CommandFailed; }
             },
         }
     } else {
@@ -1426,6 +1490,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         } else {
             try w.err("cancel failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
     }
 }
@@ -1458,6 +1523,7 @@ pub fn sendAsset(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         } else {
             try w.err("send failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
     } else {
         const source_dex = if (std.mem.eql(u8, a.from, "perp")) "" else if (std.mem.eql(u8, a.from, "spot")) "spot" else a.from;
@@ -1481,6 +1547,7 @@ pub fn sendAsset(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         } else {
             try w.err("send failed");
             try w.print("{s}\n", .{result.body});
+            return error.CommandFailed;
         }
     }
 }
@@ -1526,6 +1593,7 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     const statuses = try response.parseOrderStatuses(allocator, val);
     defer allocator.free(statuses);
 
+    var failed = false;
     if (statuses.len > 0) {
         switch (statuses[0]) {
             .resting => |r| {
@@ -1534,10 +1602,10 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
                 try w.print(" (oid: {s})\n", .{std.fmt.bufPrint(&oid_buf, "{d}", .{r.oid}) catch "?"});
             },
             .success => try w.success("Order modified"),
-            .@"error" => |msg| try w.errFmt("modify rejected: {s}", .{msg}),
+            .@"error" => |msg| { try w.errFmt("modify rejected: {s}", .{msg}); failed = true; },
             else => {
                 const ok = try result.isOk();
-                if (ok) try w.success("Modify submitted") else try w.err("modify failed");
+                if (ok) { try w.success("Modify submitted"); } else { try w.err("modify failed"); failed = true; }
             },
         }
     } else {
@@ -1547,13 +1615,16 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
             .err => {
                 const err_msg = json_mod.getString(val, "response") orelse "unknown error";
                 try w.errFmt("rejected: {s}", .{err_msg});
+                failed = true;
             },
             .unknown => {
                 try w.err("unexpected response");
                 try w.print("{s}\n", .{result.body});
+                failed = true;
             },
         }
     }
+    if (failed) return error.CommandFailed;
 }
 
 pub fn orderStatus(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.StatusArgs) !void {
@@ -1580,22 +1651,11 @@ pub fn funding(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    if (w.format == .json) {
-        var result = try client.metaAndAssetCtxs();
-        defer result.deinit();
-        try w.jsonRaw(result.body);
-        return;
-    }
-
     var mac = try client.getMetaAndAssetCtxs(null);
     defer mac.deinit();
 
     var sorted = try parseFundingData(allocator, mac.entries);
     defer allocator.free(sorted.entries.ptr[0..sorted.alloc_len]);
-
-    if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
-        return fundingTui(allocator, sorted.entries[0..sorted.count]);
-    }
 
     if (a.filter) |f| {
         var fc: usize = 0;
@@ -1615,6 +1675,32 @@ pub fn funding(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
     const start: usize = if (a.all) 0 else (page -| 1) * per_page;
     const end: usize = if (a.all) total_count else @min(start + per_page, total_count);
     const show_slice = sorted.entries[start..end];
+
+    if (w.format == .json) {
+        // coin names are alphanumeric from HL API, no JSON escaping needed
+        const buf_size = show_slice.len * 128 + 16;
+        var jbuf = try allocator.alloc(u8, buf_size);
+        defer allocator.free(jbuf);
+        var jlen: usize = 0;
+        jbuf[0] = '[';
+        jlen = 1;
+        for (show_slice, 0..) |e, i| {
+            if (i > 0) { jbuf[jlen] = ','; jlen += 1; }
+            var mark_buf: [32]u8 = undefined;
+            jlen += (std.fmt.bufPrint(jbuf[jlen..],
+                "{{\"coin\":\"{s}\",\"funding\":{d:.8},\"annualized\":{d:.2},\"mark\":\"{s}\"}}",
+                .{ e.name, e.funding, e.funding * 8760.0 * 100.0, decFmt(e.mark, &mark_buf) },
+            ) catch return error.CommandFailed).len;
+        }
+        jbuf[jlen] = ']';
+        jlen += 1;
+        try w.jsonRaw(jbuf[0..jlen]);
+        return;
+    }
+
+    if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
+        return fundingTui(allocator, sorted.entries[0..sorted.count]);
+    }
 
     try w.heading("FUNDING RATES (hourly)");
 
@@ -1817,15 +1903,20 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     const coin = upperCoin(a.coin, &coin_upper);
 
     if (w.format == .json) {
-        var result = try client.l2Book(coin);
-        defer result.deinit();
-        try w.jsonRaw(result.body);
+        var raw = try client.l2Book(coin);
+        defer raw.deinit();
+        // API returns "null" for nonexistent coins
+        if (raw.body.len < 10 or std.mem.startsWith(u8, raw.body, "null")) {
+            try w.err("no book data for this coin");
+            return error.CommandFailed;
+        }
+        try w.jsonRaw(raw.body);
         return;
     }
 
     var typed = client.getL2Book(coin) catch {
-        try w.err("no book data");
-        return;
+        try w.err("no book data for this coin");
+        return error.CommandFailed;
     };
     defer typed.deinit();
     const book_data = typed.value;
@@ -2305,13 +2396,13 @@ pub fn stream(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
 
     var conn = WsConnection.connect(std.heap.page_allocator, config.chain) catch |e| {
         try w.errFmt("WebSocket connection failed: {s}", .{@errorName(e)});
-        return;
+        return error.CommandFailed;
     };
     defer conn.close();
 
     conn.subscribe(sub) catch {
         try w.err("Failed to subscribe");
-        return;
+        return error.CommandFailed;
     };
 
     if (!is_json) {
@@ -2563,6 +2654,14 @@ fn decFmt(d: Decimal, buf: []u8) []const u8 {
     return d.normalize().toString(buf) catch "-";
 }
 
+fn hasAtKeys(val: std.json.Value) bool {
+    var it = val.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.key_ptr.*.len > 1 and entry.key_ptr.*[0] == '@') return true;
+    }
+    return false;
+}
+
 fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
     if (needle.len > haystack.len) return false;
     for (0..haystack.len - needle.len + 1) |i| {
@@ -2702,36 +2801,49 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     defer if (book_typed) |*bt| bt.deinit();
     const bl: ?[2][]response.BookLevel = if (book_typed) |bt| bt.value.levels else null;
 
+    const has_book = if (bl) |levels| levels[0].len > 0 or levels[1].len > 0 else false;
+    if (mid_str == null and !has_book) {
+        try w.err("no market data for this coin");
+        return error.CommandFailed;
+    }
+
     if (w.format == .json) {
         var jbuf: [256]u8 = undefined;
         var jlen: usize = 0;
         const jsl = jbuf[0..];
-        jlen += (std.fmt.bufPrint(jsl[jlen..], "{{\"coin\":\"{s}\"", .{a.coin}) catch return).len;
-        if (mid_str) |m_s| jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"mid\":{s}", .{m_s}) catch return).len;
+        jlen += (std.fmt.bufPrint(jsl[jlen..], "{{\"coin\":\"{s}\"", .{a.coin}) catch return error.CommandFailed).len;
+        if (mid_str) |m_s| jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"mid\":{s}", .{m_s}) catch return error.CommandFailed).len;
         if (bl) |levels| {
-            if (levels[0].len > 0) { var bb: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}) catch return).len; }
-            if (levels[1].len > 0) { var ab: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}) catch return).len; }
+            if (levels[0].len > 0) { var bb: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}) catch return error.CommandFailed).len; }
+            if (levels[1].len > 0) { var ab: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}) catch return error.CommandFailed).len; }
         }
-        jlen += (std.fmt.bufPrint(jsl[jlen..], "}}", .{}) catch return).len;
+        jlen += (std.fmt.bufPrint(jsl[jlen..], "}}", .{}) catch return error.CommandFailed).len;
         try w.jsonRaw(jbuf[0..jlen]);
         return;
     }
 
     if (w.quiet) {
-        if (mid_str) |m_s| try w.print("{s}\n", .{m_s});
+        if (mid_str) |m_s| {
+            try w.print("{s}\n", .{m_s});
+        } else if (bl) |levels| {
+            // No mid but have book — show best bid or ask
+            if (levels[0].len > 0) { var bb: [32]u8 = undefined; try w.print("{s}\n", .{decFmt(levels[0][0].px, &bb)}); }
+            else if (levels[1].len > 0) { var ab: [32]u8 = undefined; try w.print("{s}\n", .{decFmt(levels[1][0].px, &ab)}); }
+        }
         return;
     }
 
     try w.nl();
-    if (mid_str) |m_s| {
+    {
         try w.style(Style.muted);
         try w.print("  {s: <6}", .{a.coin});
         try w.style(Style.reset);
-        try w.styled(Style.bold_white, m_s);
+        if (mid_str) |m_s| {
+            try w.styled(Style.bold_white, m_s);
+        } else {
+            try w.styled(Style.dim, "(no mid)");
+        }
         try w.nl();
-    } else {
-        try w.err("coin not found");
-        return;
     }
 
     if (bl) |levels| {
@@ -2787,10 +2899,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
 
     // If no leverage value, just show current leverage info
     if (a.leverage == null) {
-        const addr = config.getAddress() orelse {
-            try w.err("address required (--address or config)");
-            return;
-        };
+        const addr = config.getAddress() orelse return error.MissingAddress;
         if (w.format == .json) {
             var result = try client.activeAssetData(addr, a.coin);
             defer result.deinit();
@@ -3057,8 +3166,8 @@ pub fn referralCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         },
         .set => {
             const code = a.code orelse {
-                try w.err("usage: hl referral set <CODE>");
-                return;
+                try w.err("usage: hlz referral set <CODE>");
+                return error.MissingArgument;
             };
             const signer = try config.getSigner();
             const nonce: u64 = @intCast(std.time.milliTimestamp());
@@ -3266,7 +3375,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
                 // JSON array — parse, then copy strings into stdin_storage tail
                 const parsed = std.json.parseFromSlice(std.json.Value, allocator, input, .{}) catch {
                     try w.err("invalid JSON on stdin");
-                    return;
+                    return error.CommandFailed;
                 };
                 // Copy strings into rest of stdin_storage so they outlive parsed
                 var pos: usize = stdin_len;
@@ -3299,8 +3408,8 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
     }
 
     if (effective.count == 0) {
-        try w.err("no orders. Usage: hl batch \"buy BTC 0.1 @98000\" or echo orders | hl batch --stdin");
-        return;
+        try w.err("no orders. Usage: hlz batch \"buy BTC 0.1 @98000\" or echo orders | hlz batch --stdin");
+        return error.CommandFailed;
     }
     const ba = effective;
 
@@ -3382,7 +3491,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
 
     if (order_count == 0) {
         try w.err("no valid orders to submit");
-        return;
+        return error.CommandFailed;
     }
 
     const batch_order = types.BatchOrder{
