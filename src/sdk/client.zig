@@ -844,6 +844,7 @@ pub const Client = struct {
         const url = std.fmt.bufPrint(&url_buf, "{s}/exchange", .{self.base_url}) catch return error.BufferOverflow;
 
         const response_body = try self.doPost(url, body);
+        errdefer self.allocator.free(response_body.body);
         return ExchangeResult{
             .allocator = self.allocator,
             .body = response_body.body,
