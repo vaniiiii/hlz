@@ -2806,11 +2806,50 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    // Grab mid price (allMids returns a JSON object {coin: "price", ...})
+    // Spot pairs: use tokenDetails for oracle-adjusted USD price
+    const is_spot = std.mem.indexOf(u8, a.coin, "/") != null;
+    var spot_mid: ?[]const u8 = null;
+    var spot_mark: ?[]const u8 = null;
+    var token_details: ?std.json.Parsed(response.TokenDetails) = null;
+    defer if (token_details) |*td| td.deinit();
+
+    if (is_spot) {
+        // Extract base token name (before "/")
+        const slash = std.mem.indexOf(u8, a.coin, "/") orelse 0;
+        const base_name = a.coin[0..slash];
+        // Look up tokenId from spotMeta, then fetch tokenDetails for USD price
+        var token_id_buf: [36]u8 = undefined;
+        var token_id_len: usize = 0;
+        {
+            var spot_meta = client.getSpotMeta() catch null;
+            defer if (spot_meta) |*sm| sm.deinit();
+            if (spot_meta) |sm| {
+                for (sm.value.tokens) |tok| {
+                    if (std.ascii.eqlIgnoreCase(tok.name, base_name) and tok.tokenId.len > 0 and tok.tokenId.len <= 36) {
+                        @memcpy(token_id_buf[0..tok.tokenId.len], tok.tokenId);
+                        token_id_len = tok.tokenId.len;
+                        break;
+                    }
+                }
+            }
+        }
+        if (token_id_len > 0) {
+            token_details = client.getTokenDetails(token_id_buf[0..token_id_len]) catch null;
+            if (token_details) |td| {
+                spot_mid = td.value.midPx;
+                spot_mark = td.value.markPx;
+            }
+        }
+    }
+
+    // Grab mid price from allMids (raw book midpoint)
     var mids_result = try client.allMids(null);
     defer mids_result.deinit();
     const mids_val = try mids_result.json();
-    const mid_str = json_mod.getString(mids_val, a.coin);
+    const raw_mid = json_mod.getString(mids_val, a.coin);
+
+    // For spot: prefer oracle markPx, fall back to tokenDetails midPx, then raw allMids
+    const mid_str = if (is_spot) (spot_mark orelse spot_mid orelse raw_mid) else raw_mid;
 
     // Grab book for bid/ask
     var book_typed = client.getL2Book(a.coin) catch null;
@@ -2818,7 +2857,7 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     const bl: ?[2][]response.BookLevel = if (book_typed) |bt| bt.value.levels else null;
 
     const has_book = if (bl) |levels| levels[0].len > 0 or levels[1].len > 0 else false;
-    if (mid_str == null and !has_book) {
+    if (mid_str == null and !has_book and spot_mark == null and spot_mid == null) {
         try w.err("no market data for this coin");
         return error.CommandFailed;
     }

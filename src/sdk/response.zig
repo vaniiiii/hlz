@@ -345,6 +345,16 @@ pub const SpotPair = struct {
     isCanonical: ?bool = null,
 };
 
+pub const SpotAssetCtx = struct {
+    coin: []const u8 = "",
+    markPx: ?[]const u8 = null,
+    midPx: ?[]const u8 = null,
+    prevDayPx: ?[]const u8 = null,
+    dayNtlVlm: ?[]const u8 = null,
+    circulatingSupply: ?[]const u8 = null,
+    totalSupply: ?[]const u8 = null,
+};
+
 pub const TokenDetails = struct {
     name: []const u8 = "",
     szDecimals: u32 = 0,

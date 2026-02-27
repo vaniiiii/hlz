@@ -674,6 +674,43 @@ pub const Client = struct {
         );
     }
 
+    /// Parse spotMetaAndAssetCtxs — heterogeneous [spotMeta, [ctx, ...]] tuple.
+    pub fn getSpotMetaAndAssetCtxs(self: *Client) !SpotMetaAndAssetCtxsResult {
+        var raw = try self.infoRequest(
+            \\{"type":"spotMetaAndAssetCtxs"}
+        );
+        defer raw.deinit();
+        const val = try raw.json();
+        if (val != .array or val.array.items.len < 2) return error.Overflow;
+        const meta_val = val.array.items[0];
+        const ctxs_val = val.array.items[1];
+
+        // Parse spotMeta
+        const meta = try std.json.parseFromValue(R.SpotMeta, self.allocator, meta_val, R.ParseOpts);
+
+        // Parse asset contexts array
+        const ctx_arr = if (ctxs_val == .array) ctxs_val.array.items else return error.Overflow;
+        var ctxs = try self.allocator.alloc(R.SpotAssetCtx, ctx_arr.len);
+        var count: usize = 0;
+        for (ctx_arr) |item| {
+            const ctx = std.json.parseFromValue(R.SpotAssetCtx, self.allocator, item, R.ParseOpts) catch continue;
+            ctxs[count] = ctx.value;
+            count += 1;
+        }
+        return .{ .meta = meta.value, .ctxs = ctxs[0..count], .alloc_len = ctx_arr.len, .allocator = self.allocator };
+    }
+
+    pub const SpotMetaAndAssetCtxsResult = struct {
+        meta: R.SpotMeta,
+        ctxs: []R.SpotAssetCtx,
+        alloc_len: usize,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *SpotMetaAndAssetCtxsResult) void {
+            self.allocator.free(self.ctxs.ptr[0..self.alloc_len]);
+        }
+    };
+
     pub fn getTokenDetails(self: *Client, token_id: []const u8) !Parsed(R.TokenDetails) {
         var buf: [256]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, "{{\"type\":\"tokenDetails\",\"tokenId\":\"{s}\"}}", .{token_id}) catch return error.Overflow;
@@ -933,7 +970,7 @@ pub const Client = struct {
 
         var response = try req.receiveHead(&.{});
         var reader = response.reader(&.{});
-        const body = reader.allocRemaining(self.allocator, @enumFromInt(1024 * 1024)) catch
+        const body = reader.allocRemaining(self.allocator, @enumFromInt(8 * 1024 * 1024)) catch
             return error.HttpRequestFailed;
 
         return .{
