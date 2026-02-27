@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/cac1053e-b5ca-47d8-8bce-4f6515f72042" width="720" autoplay loop muted />
+  <img src="terminal.gif" alt="hlz trading terminal" width="720" />
 </p>
 
 
