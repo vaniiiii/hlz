@@ -14,21 +14,9 @@ import { HomePage } from 'vocs/components'
   <HomePage.Tagline>Zig Tooling for Hyperliquid</HomePage.Tagline>
 
 <div className="max-md:-mx-[var(--vocs-content_horizontalPadding,24px)] max-md:[&_[data-v-code-container]]:!rounded-none max-md:[&_pre]:!whitespace-pre-wrap max-md:[&_pre]:!overflow-x-hidden max-md:[&_pre]:!break-all max-md:[&_code]:!block max-md:[&_code]:!whitespace-pre-wrap max-md:[&_code]:!break-all max-md:[&_.line]:!whitespace-pre-wrap max-md:[&_.line]:!break-all">
-:::code-group
-```bash [macOS]
-# macOS (Apple Silicon)
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-# macOS (Intel): replace with hlz-darwin-x64
-chmod +x hlz
+```bash
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
 ```
-
-```bash [Linux]
-# x86_64 (static)
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
-# aarch64: replace with hlz-linux-arm64
-chmod +x hlz
-```
-:::
 </div>
 
   <HomePage.Description>

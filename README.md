@@ -39,17 +39,11 @@ Both are static binaries. Pipe-aware — tables on TTY, JSON when piped.
 
 ## Install
 
-**Download a binary** from [Releases](../../releases/latest):
-
 ```bash
-# macOS (Apple Silicon)
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-chmod +x hlz && mv hlz /usr/local/bin/
-
-# Linux (x64, static)
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
-chmod +x hlz && mv hlz /usr/local/bin/
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
 ```
+
+Or download a binary manually from [Releases](../../releases/latest).
 
 **From source** (requires [Zig 0.15.2](https://ziglang.org/download/)):
 

@@ -9,9 +9,7 @@ hlz gives you three things:
 ## Install the CLI
 
 ```bash
-# See https://github.com/vaniiiii/hlz/releases/latest for binaries
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-chmod +x hlz
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
 ```
 
 Or build from source:

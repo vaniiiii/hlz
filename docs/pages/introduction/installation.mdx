@@ -1,6 +1,14 @@
 # Installation
 
-## Pre-built Binaries
+## Quick Install
+
+Auto-detects OS and architecture:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+```
+
+## Manual Download
 
 Download from [GitHub Releases](https://github.com/vaniiiii/hlz/releases/latest):
 
@@ -81,16 +89,12 @@ hlz price BTC
 
 ## Updating
 
-:::code-group
-
-```bash [Binary]
-# Re-download latest release (replace platform as needed)
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-chmod +x hlz && sudo mv hlz /usr/local/bin/
+```bash
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
 ```
 
-```bash [Source]
+Or from source:
+
+```bash
 git pull && zig build -Doptimize=ReleaseSmall
 ```
-
-:::

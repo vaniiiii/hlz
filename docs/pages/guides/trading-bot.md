@@ -6,9 +6,7 @@ This guide shows how to build a simple trading bot using the `hlz` CLI and shell
 
 ```bash
 # Install hlz
-# See https://github.com/vaniiiii/hlz/releases/latest for binaries
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-chmod +x hlz
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
 
 # Set up your key
 hlz keys new bot
