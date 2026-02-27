@@ -18,7 +18,7 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="https://hlz.dev">Docs</a> ·
+  <a href="https://vaniiiii.github.io/hlz">Docs</a> ·
   <a href="#credits">Credits</a>
 </p>
 
@@ -39,24 +39,33 @@ Both are static binaries. Pipe-aware — tables on TTY, JSON when piped.
 
 ## Install
 
+**Download a binary** from [Releases](../../releases/latest):
+
 ```bash
-curl -fsSL https://hlz.dev/install.sh | sh
+# macOS (Apple Silicon)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+chmod +x hlz && mv hlz /usr/local/bin/
+
+# Linux (x64, static)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
+chmod +x hlz && mv hlz /usr/local/bin/
 ```
 
-From source (requires [Zig 0.15.2](https://ziglang.org/download/)):
+**From source** (requires [Zig 0.15.2](https://ziglang.org/download/)):
 
 ```bash
-git clone https://github.com/hlz/hlz
+git clone https://github.com/vaniiiii/hlz
 cd hlz
 zig build -Doptimize=ReleaseSmall
+# Binaries in zig-out/bin/hlz and zig-out/bin/hlz-terminal
 ```
 
-As a Zig dependency:
+**As a Zig dependency:**
 
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/hlz/hlz#main",
+        .url = "git+https://github.com/vaniiiii/hlz#main",
     },
 },
 ```

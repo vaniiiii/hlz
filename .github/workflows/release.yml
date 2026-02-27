@@ -1,0 +1,55 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-macos
+            suffix: darwin-arm64
+          - os: macos-13
+            target: x86_64-macos
+            suffix: darwin-x64
+          - os: ubuntu-latest
+            target: x86_64-linux-musl
+            suffix: linux-x64
+          - os: ubuntu-latest
+            target: aarch64-linux-musl
+            suffix: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build hlz
+        run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/hlz dist/hlz-${{ matrix.suffix }} 2>/dev/null || true
+          cp zig-out/bin/hlz-terminal dist/hlz-terminal-${{ matrix.suffix }} 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
