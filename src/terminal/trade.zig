@@ -1,10 +1,11 @@
 const std = @import("std");
 const hyperzig = @import("hyperzig");
 const client_mod = hyperzig.hypercore.client;
-const json_mod = hyperzig.hypercore.json;
 const ws_types = hyperzig.hypercore.ws;
 const signing = hyperzig.hypercore.signing;
 const response = hyperzig.hypercore.response;
+const resp_types = response;
+const Decimal = hyperzig.math.decimal.Decimal;
 const signer_mod = hyperzig.crypto.signer;
 const App = @import("App");
 const BufMod = @import("Buffer");
@@ -473,43 +474,42 @@ const WsWorker = struct {
     // ── Decode + Apply (parse outside lock, apply under lock) ──
 
     fn decodeAndApplyBook(data: []const u8, shared: *Shared, depth: usize) void {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{}) catch return;
+        const WsBookMsg = struct { data: resp_types.L2Book = .{} };
+        const parsed = std.json.parseFromSlice(WsBookMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const levels = json_mod.getArray(parsed.value, "levels") orelse return;
-        if (levels.len < 2) return;
-        const bids_raw = if (levels[0] == .array) levels[0].array.items else return;
-        const asks_raw = if (levels[1] == .array) levels[1].array.items else return;
+        const bl = parsed.value.data.levels;
 
         var bids: [64]BookLevel = undefined;
         var asks: [64]BookLevel = undefined;
-        const eff = @min(depth, @min(bids_raw.len, @min(asks_raw.len, 64)));
+        const eff = @min(depth, @min(bl[0].len, @min(bl[1].len, 64)));
         var bid_cum: f64 = 0;
         var ask_cum: f64 = 0;
         for (0..eff) |i| {
-            const bpx = json_mod.getString(bids_raw[i], "px") orelse "0";
-            const bsz_s = json_mod.getString(bids_raw[i], "sz") orelse "0";
-            const bsz = std.fmt.parseFloat(f64, bsz_s) catch 0;
+            var bpx_buf: [24]u8 = undefined;
+            var bsz_buf: [24]u8 = undefined;
+            const bsz = decToF64(bl[0][i].sz);
             bid_cum += bsz;
             bids[i] = .{ .sz = bsz, .cum = bid_cum };
-            bids[i].px_len = copyTo(&bids[i].px_buf, bpx);
-            bids[i].sz_len = copyTo(&bids[i].sz_buf, bsz_s);
+            bids[i].px_len = copyTo(&bids[i].px_buf, bl[0][i].px.normalize().toString(&bpx_buf) catch "0");
+            bids[i].sz_len = copyTo(&bids[i].sz_buf, bl[0][i].sz.normalize().toString(&bsz_buf) catch "0");
 
-            const apx = json_mod.getString(asks_raw[i], "px") orelse "0";
-            const asz_s = json_mod.getString(asks_raw[i], "sz") orelse "0";
-            const asz = std.fmt.parseFloat(f64, asz_s) catch 0;
+            var apx_buf: [24]u8 = undefined;
+            var asz_buf: [24]u8 = undefined;
+            const asz = decToF64(bl[1][i].sz);
             ask_cum += asz;
             asks[i] = .{ .sz = asz, .cum = ask_cum };
-            asks[i].px_len = copyTo(&asks[i].px_buf, apx);
-            asks[i].sz_len = copyTo(&asks[i].sz_buf, asz_s);
+            asks[i].px_len = copyTo(&asks[i].px_buf, bl[1][i].px.normalize().toString(&apx_buf) catch "0");
+            asks[i].sz_len = copyTo(&asks[i].sz_buf, bl[1][i].sz.normalize().toString(&asz_buf) catch "0");
         }
         shared.applyBook(bids, asks, eff, @max(bid_cum, ask_cum));
     }
 
     fn decodeAndApplyTrades(data: []const u8, shared: *Shared) void {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{}) catch return;
+        const WsTradesMsg = struct { data: []resp_types.Trade = &.{} };
+        const parsed = std.json.parseFromSlice(WsTradesMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const arr = if (parsed.value == .array) parsed.value.array.items else return;
-        const new_count = @min(arr.len, MAX_ROWS);
+        const trade_list = parsed.value.data;
+        const new_count = @min(trade_list.len, MAX_ROWS);
 
         shared.mu.lock();
         defer shared.mu.unlock();
@@ -536,48 +536,43 @@ const WsWorker = struct {
             shared.trades.setHeader(3, "Side");
         }
         for (0..new_count) |idx| {
-            const trade = arr[idx];
-            if (trade == .object) if (trade.object.get("time")) |tv| switch (tv) {
-                .integer => |ts| {
-                    const ds: u64 = @intCast(@divFloor(ts, 1000));
-                    const s = ds % 86400;
-                    var tb: [10]u8 = undefined;
-                    const t = std.fmt.bufPrint(&tb, "{d:0>2}:{d:0>2}:{d:0>2}", .{ s / 3600, (s % 3600) / 60, s % 60 }) catch "?";
-                    shared.trades.set(idx, 0, t);
-                },
-                else => {},
-            };
-            if (json_mod.getString(trade, "px")) |p| shared.trades.set(idx, 1, p);
-            if (json_mod.getString(trade, "sz")) |sz| shared.trades.set(idx, 2, sz);
-            if (json_mod.getString(trade, "side")) |side| {
-                const is_buy = std.mem.eql(u8, side, "B");
-                shared.trades.set(idx, 3, if (is_buy) "BUY" else "SELL");
-                shared.trades.row_colors[idx] = if (is_buy) .positive else .negative;
+            const tr = trade_list[idx];
+            if (tr.time > 0) {
+                const s = @as(u64, @intCast(tr.time)) / 1000 % 86400;
+                var tb: [10]u8 = undefined;
+                shared.trades.set(idx, 0, std.fmt.bufPrint(&tb, "{d:0>2}:{d:0>2}:{d:0>2}", .{ s / 3600, (s % 3600) / 60, s % 60 }) catch "?");
             }
+            var px_b: [20]u8 = undefined;
+            shared.trades.set(idx, 1, tr.px.normalize().toString(&px_b) catch "?");
+            var sz_b: [20]u8 = undefined;
+            shared.trades.set(idx, 2, tr.sz.normalize().toString(&sz_b) catch "?");
+            const is_buy = std.mem.eql(u8, tr.side, "B");
+            shared.trades.set(idx, 3, if (is_buy) "BUY" else "SELL");
+            shared.trades.row_colors[idx] = if (is_buy) .positive else .negative;
         }
         shared.trades.n_rows = total;
         shared.gen += 1;
     }
 
     fn decodeAndApplyCandle(data: []const u8, shared: *Shared) void {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{}) catch return;
+        const WsCandleMsg = struct { data: resp_types.Candle = .{} };
+        const parsed = std.json.parseFromSlice(WsCandleMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const val = parsed.value;
-        const t: i64 = if (val == .object) if (val.object.get("t")) |tv| switch (tv) { .integer => |i| i, else => 0 } else 0 else 0;
-        if (t == 0) return;
+        const c = parsed.value.data;
+        if (c.t == 0) return;
         shared.applyCandle(.{
-            .t = t,
-            .o = parseFloat(val, "o"), .h = parseFloat(val, "h"),
-            .l = parseFloat(val, "l"), .c = parseFloat(val, "c"),
-            .v = parseFloat(val, "v"),
+            .t = @as(i64, @intCast(c.t)),
+            .o = decToF64(c.o), .h = decToF64(c.h),
+            .l = decToF64(c.l), .c = decToF64(c.c),
+            .v = decToF64(c.v),
         });
     }
 
     fn decodeAndApplyInfo(data: []const u8, shared: *Shared) void {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{}) catch return;
+        const WsCtxMsg = struct { data: struct { ctx: resp_types.AssetContext = .{} } = .{} };
+        const parsed = std.json.parseFromSlice(WsCtxMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const ctx = if (parsed.value == .object) parsed.value.object.get("ctx") orelse return else return;
-        shared.applyInfo(buildInfoFromCtx(ctx));
+        shared.applyInfo(buildInfoFromCtx(parsed.value.data.ctx));
     }
 };
 
@@ -1197,7 +1192,6 @@ const Render = struct {
 const Orders = struct {
     const zig = @import("hyperzig");
     const types = zig.hypercore.types;
-    const Decimal = zig.math.decimal.Decimal;
 
     fn execute(order: *OrderState, client: *Client, coin: []const u8, config: *const Config, asset_index: ?usize) void {
         _ = coin;
@@ -1339,29 +1333,22 @@ const Rest = struct {
     fn resolveAssetIndex(client: *Client, coin: []const u8, shared: *Shared) void {
         // Check if it's a spot pair (contains /)
         if (std.mem.indexOf(u8, coin, "/") != null) {
-            var result = client.spot() catch return;
-            defer result.deinit();
-            const val = result.json() catch return;
-            const universe = json_mod.getArray(val, "universe") orelse return;
-            for (universe) |item| {
-                const name = json_mod.getString(item, "name") orelse continue;
-                if (std.ascii.eqlIgnoreCase(name, coin)) {
-                    const idx = json_mod.getInt(u64, item, "index") orelse continue;
+            var typed = client.getSpotMeta() catch return;
+            defer typed.deinit();
+            for (typed.value.universe) |pair| {
+                if (std.ascii.eqlIgnoreCase(pair.name, coin)) {
                     shared.mu.lock();
                     defer shared.mu.unlock();
-                    shared.asset_index = @intCast(idx);
+                    shared.asset_index = @intCast(pair.index);
                     return;
                 }
             }
         } else {
             // Perp
-            var result = client.perps(null) catch return;
-            defer result.deinit();
-            const val = result.json() catch return;
-            const universe = json_mod.getArray(val, "universe") orelse return;
-            for (universe, 0..) |item, idx| {
-                const name = json_mod.getString(item, "name") orelse continue;
-                if (std.ascii.eqlIgnoreCase(name, coin)) {
+            var typed = client.getPerps(null) catch return;
+            defer typed.deinit();
+            for (typed.value.universe, 0..) |pm, idx| {
+                if (std.ascii.eqlIgnoreCase(pm.name, coin)) {
                     shared.mu.lock();
                     defer shared.mu.unlock();
                     shared.asset_index = idx;
@@ -1379,18 +1366,16 @@ const Rest = struct {
             else if (std.mem.eql(u8, interval, "1h")) 3600_000 * 500
             else if (std.mem.eql(u8, interval, "4h")) 3600_000 * 2000
             else 3600_000 * 8760;
-        var result = client.candleSnapshot(coin, interval, now -| lookback, now) catch return;
-        defer result.deinit();
-        const val = result.json() catch return;
-        const arr = if (val == .array) val.array.items else return;
+        var typed = client.getCandleSnapshot(coin, interval, now -| lookback, now) catch return;
+        defer typed.deinit();
         var n: usize = 0;
-        for (arr) |item| {
+        for (typed.value) |candle| {
             if (n >= Chart.MAX_CANDLES) break;
             out[n] = .{
-                .t = if (item == .object) if (item.object.get("t")) |v| switch (v) { .integer => |i| i, else => 0 } else 0 else 0,
-                .o = parseFloat(item, "o"), .h = parseFloat(item, "h"),
-                .l = parseFloat(item, "l"), .c = parseFloat(item, "c"),
-                .v = parseFloat(item, "v"),
+                .t = @as(i64, @intCast(candle.t)),
+                .o = decToF64(candle.o), .h = decToF64(candle.h),
+                .l = decToF64(candle.l), .c = decToF64(candle.c),
+                .v = decToF64(candle.v),
             };
             n += 1;
         }
@@ -1413,186 +1398,173 @@ const Rest = struct {
         var lev_len: usize = 0;
         var lev_cross = true;
 
-        // 1. Positions + account value
+        // 1. Positions + account value (typed)
         blk_pos: {
-            var result = client.clearinghouseState(addr, null) catch break :blk_pos;
-            defer result.deinit();
-            const val = result.json() catch break :blk_pos;
-            if (val == .object) if (val.object.get("marginSummary")) |ms| {
-                if (json_mod.getString(ms, "accountValue")) |av| al = copyTo(&ab, av);
-                if (json_mod.getString(ms, "totalMarginUsed")) |mu| ml = copyTo(&mb, mu);
-            };
-            if (json_mod.getString(val, "withdrawable")) |w| avl = copyTo(&avb, w);
+            var typed = client.getClearinghouseState(addr, null) catch break :blk_pos;
+            defer typed.deinit();
+            const state = typed.value;
+            var av_str: [24]u8 = undefined;
+            var mu_str: [24]u8 = undefined;
+            var wd_str: [24]u8 = undefined;
+            al = copyTo(&ab, state.marginSummary.accountValue.normalize().toString(&av_str) catch "0");
+            ml = copyTo(&mb, state.marginSummary.totalMarginUsed.normalize().toString(&mu_str) catch "0");
+            avl = copyTo(&avb, state.withdrawable.normalize().toString(&wd_str) catch "0");
             pos.n_cols = 6;
             pos.setHeader(0, "Coin"); pos.setHeader(1, "Side"); pos.setHeader(2, "Size");
             pos.setHeader(3, "Entry"); pos.setHeader(4, "Lev"); pos.setHeader(5, "uPnL");
-            if (json_mod.getArray(val, "assetPositions")) |aps| for (aps) |ap| {
+            for (state.assetPositions) |ap| {
                 if (pos.n_rows >= MAX_ROWS) break;
-                const p = if (ap == .object) (ap.object.get("position") orelse continue) else continue;
-                const szi = json_mod.getString(p, "szi") orelse "0";
-                const sz_f = std.fmt.parseFloat(f64, szi) catch 0;
+                const p = ap.position;
+                const sz_f = decToF64(p.szi);
                 if (sz_f == 0) continue;
-                const pos_coin = json_mod.getString(p, "coin") orelse "";
-                if (std.ascii.eqlIgnoreCase(pos_coin, coin)) {
-                    if (p == .object) if (p.object.get("leverage")) |lev_obj| {
-                        if (json_mod.getInt(u64, lev_obj, "value")) |lv| {
-                            lev_len = (std.fmt.bufPrint(&lev_buf, "{d}", .{lv}) catch "").len;
-                        }
-                        const lt = json_mod.getString(lev_obj, "type") orelse "cross";
-                        lev_cross = !std.ascii.eqlIgnoreCase(lt, "isolated");
-                    };
+                if (std.ascii.eqlIgnoreCase(p.coin, coin)) {
+                    if (p.leverage) |lev| {
+                        lev_len = (std.fmt.bufPrint(&lev_buf, "{d}", .{lev.value}) catch "").len;
+                        lev_cross = !std.ascii.eqlIgnoreCase(lev.type, "isolated");
+                    }
                 }
                 const r = pos.n_rows;
-                pos.set(r, 0, pos_coin);
+                pos.set(r, 0, p.coin);
                 if (sz_f > 0) { pos.set(r, 1, "LONG"); pos.row_colors[r] = .positive; } else { pos.set(r, 1, "SHORT"); pos.row_colors[r] = .negative; }
                 var sb: [20]u8 = undefined;
                 pos.set(r, 2, std.fmt.bufPrint(&sb, "{d:.4}", .{@abs(sz_f)}) catch "?");
-                if (json_mod.getString(p, "entryPx")) |ep| pos.set(r, 3, ep);
-                // Leverage column
-                if (p == .object) if (p.object.get("leverage")) |lev_obj| {
-                    const lt = json_mod.getString(lev_obj, "type") orelse "cross";
-                    const lv = json_mod.getInt(u64, lev_obj, "value") orelse 0;
+                if (p.entryPx) |ep| { var eb: [20]u8 = undefined; pos.set(r, 3, ep.normalize().toString(&eb) catch "?"); }
+                if (p.leverage) |lev| {
                     var lb: [16]u8 = undefined;
-                    pos.set(r, 4, std.fmt.bufPrint(&lb, "{d}x {s}", .{ lv, lt }) catch "?");
-                };
-                if (json_mod.getString(p, "unrealizedPnl")) |pnl| {
-                    // Show PnL with ROE
-                    const roe = json_mod.getString(p, "returnOnEquity") orelse "";
+                    pos.set(r, 4, std.fmt.bufPrint(&lb, "{d}x {s}", .{ lev.value, lev.type }) catch "?");
+                }
+                if (p.unrealizedPnl) |pnl| {
+                    var pnl_str: [20]u8 = undefined;
+                    const pnl_s = pnl.normalize().toString(&pnl_str) catch "0";
+                    const roe_f = if (p.returnOnEquity) |roe| decToF64(roe) else 0;
                     var pb: [24]u8 = undefined;
-                    const roe_f = std.fmt.parseFloat(f64, roe) catch 0;
-                    pos.set(r, 5, std.fmt.bufPrint(&pb, "{s} ({d:.1}%)", .{ pnl, roe_f * 100 }) catch pnl);
-                    pos.row_colors[r] = if ((std.fmt.parseFloat(f64, pnl) catch 0) >= 0) .positive else .negative;
+                    pos.set(r, 5, std.fmt.bufPrint(&pb, "{s} ({d:.1}%)", .{ pnl_s, roe_f * 100 }) catch pnl_s);
+                    pos.row_colors[r] = if (decToF64(pnl) >= 0) .positive else .negative;
                 }
                 pos.n_rows += 1;
-            };
+            }
         }
 
-        // 2. Open orders
+        // 2. Open orders (typed)
         blk_ords: {
-            var result = client.openOrders(addr, null) catch break :blk_ords;
-            defer result.deinit();
-            const val = result.json() catch break :blk_ords;
-            const arr = if (val == .array) val.array.items else break :blk_ords;
+            var typed = client.getOpenOrders(addr, null) catch break :blk_ords;
+            defer typed.deinit();
             ords.n_cols = 6;
             ords.setHeader(0, "Coin"); ords.setHeader(1, "Side"); ords.setHeader(2, "Size");
             ords.setHeader(3, "Price"); ords.setHeader(4, "Type"); ords.setHeader(5, "OID");
-            for (arr) |o| {
+            for (typed.value) |o| {
                 if (ords.n_rows >= MAX_ROWS) break;
                 const r = ords.n_rows;
-                if (json_mod.getString(o, "coin")) |c| ords.set(r, 0, c);
-                if (json_mod.getString(o, "side")) |s| { ords.set(r, 1, if (std.mem.eql(u8, s, "B")) "Buy" else "Sell"); ords.row_colors[r] = if (std.mem.eql(u8, s, "B")) .positive else .negative; }
-                if (json_mod.getString(o, "sz")) |s| ords.set(r, 2, s);
-                if (json_mod.getString(o, "limitPx")) |p| ords.set(r, 3, p);
-                if (json_mod.getString(o, "orderType")) |t| ords.set(r, 4, t);
-                if (o == .object) if (o.object.get("oid")) |oid| switch (oid) {
-                    .integer => |i| { var ob: [20]u8 = undefined; ords.set(r, 5, std.fmt.bufPrint(&ob, "{d}", .{i}) catch "?"); },
-                    else => {},
-                };
+                ords.set(r, 0, o.coin);
+                const is_buy = std.mem.eql(u8, o.side, "B");
+                ords.set(r, 1, if (is_buy) "Buy" else "Sell");
+                ords.row_colors[r] = if (is_buy) .positive else .negative;
+                var sz_b: [20]u8 = undefined;
+                ords.set(r, 2, o.sz.normalize().toString(&sz_b) catch "?");
+                var px_b: [20]u8 = undefined;
+                ords.set(r, 3, o.limitPx.normalize().toString(&px_b) catch "?");
+                ords.set(r, 4, o.orderType);
+                var ob: [20]u8 = undefined;
+                ords.set(r, 5, std.fmt.bufPrint(&ob, "{d}", .{o.oid}) catch "?");
                 ords.n_rows += 1;
             }
         }
 
         // 3. Trade History (user fills) — matches Hyperliquid "Trade History" tab
+        // 3. Trade History (typed)
         blk_trades: {
-            var result = client.userFills(addr) catch break :blk_trades;
-            defer result.deinit();
-            const val = result.json() catch break :blk_trades;
-            const arr = if (val == .array) val.array.items else break :blk_trades;
+            var typed = client.getUserFills(addr) catch break :blk_trades;
+            defer typed.deinit();
             trades.n_cols = 7;
             trades.setHeader(0, "Time"); trades.setHeader(1, "Coin"); trades.setHeader(2, "Direction");
             trades.setHeader(3, "Price"); trades.setHeader(4, "Size"); trades.setHeader(5, "Value");
             trades.setHeader(6, "Fee");
-            for (arr) |f| {
+            for (typed.value) |f| {
                 if (trades.n_rows >= MAX_ROWS) break;
                 const r = trades.n_rows;
-                var tb: [10]u8 = undefined;
-                const ts = fmtTimestamp(f, "time", &tb);
-                if (ts.len > 0) trades.set(r, 0, ts);
-                if (json_mod.getString(f, "coin")) |c| trades.set(r, 1, c);
-                if (json_mod.getString(f, "side")) |s| {
-                    const ib = std.mem.eql(u8, s, "B");
-                    if (json_mod.getString(f, "dir")) |d| trades.set(r, 2, d)
-                    else trades.set(r, 2, if (ib) "Open Long" else "Open Short");
-                    trades.row_colors[r] = if (ib) .positive else .negative;
+                if (f.time > 0) {
+                    const sec: u64 = @intCast(@mod(@divFloor(@as(i64, @intCast(f.time)), 1000), 86400));
+                    var tb: [10]u8 = undefined;
+                    trades.set(r, 0, std.fmt.bufPrint(&tb, "{d:0>2}:{d:0>2}:{d:0>2}", .{ sec / 3600, (sec % 3600) / 60, sec % 60 }) catch "?");
                 }
-                if (json_mod.getString(f, "px")) |p| trades.set(r, 3, p);
-                if (json_mod.getString(f, "sz")) |s| trades.set(r, 4, s);
-                // Trade value = px * sz
-                const px_f = std.fmt.parseFloat(f64, json_mod.getString(f, "px") orelse "0") catch 0;
-                const sz_f = std.fmt.parseFloat(f64, json_mod.getString(f, "sz") orelse "0") catch 0;
+                trades.set(r, 1, f.coin);
+                const is_buy = std.mem.eql(u8, f.side, "B");
+                trades.set(r, 2, if (f.dir.len > 0) f.dir else if (is_buy) "Open Long" else "Open Short");
+                trades.row_colors[r] = if (is_buy) .positive else .negative;
+                var px_b: [20]u8 = undefined;
+                trades.set(r, 3, f.px.normalize().toString(&px_b) catch "?");
+                var sz_b: [20]u8 = undefined;
+                trades.set(r, 4, f.sz.normalize().toString(&sz_b) catch "?");
+                const val_f = decToF64(f.px) * decToF64(f.sz);
                 var vb: [20]u8 = undefined;
-                trades.set(r, 5, std.fmt.bufPrint(&vb, "{d:.2}", .{px_f * sz_f}) catch "?");
-                if (json_mod.getString(f, "fee")) |fe| trades.set(r, 6, fe);
+                trades.set(r, 5, std.fmt.bufPrint(&vb, "{d:.2}", .{val_f}) catch "?");
+                var fee_b: [20]u8 = undefined;
+                trades.set(r, 6, f.fee.normalize().toString(&fee_b) catch "?");
                 trades.n_rows += 1;
             }
         }
 
-        // 4. Funding History
+        // 4. Funding History (typed)
         blk_fund: {
             const now: u64 = @intCast(std.time.milliTimestamp());
-            var result = client.userFunding(addr, now -| 86400_000 * 7, null) catch break :blk_fund;
-            defer result.deinit();
-            const val = result.json() catch break :blk_fund;
-            const arr = if (val == .array) val.array.items else break :blk_fund;
+            var typed = client.getUserFunding(addr, now -| 86400_000 * 7, null) catch break :blk_fund;
+            defer typed.deinit();
             funding.n_cols = 5;
             funding.setHeader(0, "Time"); funding.setHeader(1, "Coin"); funding.setHeader(2, "Size");
             funding.setHeader(3, "Payment"); funding.setHeader(4, "Rate");
-            for (arr) |f| {
+            for (typed.value) |f| {
                 if (funding.n_rows >= MAX_ROWS) break;
                 const r = funding.n_rows;
-                var tb: [10]u8 = undefined;
-                const ts = fmtTimestamp(f, "time", &tb);
-                if (ts.len > 0) funding.set(r, 0, ts);
-                // Data is nested under "delta"
-                const delta = if (f == .object) (f.object.get("delta") orelse f) else f;
-                if (json_mod.getString(delta, "coin")) |c| funding.set(r, 1, c);
-                if (json_mod.getString(delta, "szi")) |s| funding.set(r, 2, s);
-                if (json_mod.getString(delta, "usdc")) |u| {
-                    funding.set(r, 3, u);
-                    funding.row_colors[r] = if ((std.fmt.parseFloat(f64, u) catch 0) >= 0) .positive else .negative;
+                if (f.time > 0) {
+                    const sec: u64 = @intCast(@mod(@divFloor(@as(i64, @intCast(f.time)), 1000), 86400));
+                    var tb: [10]u8 = undefined;
+                    funding.set(r, 0, std.fmt.bufPrint(&tb, "{d:0>2}:{d:0>2}:{d:0>2}", .{ sec / 3600, (sec % 3600) / 60, sec % 60 }) catch "?");
                 }
-                if (json_mod.getString(delta, "fundingRate")) |fr| funding.set(r, 4, fr);
+                funding.set(r, 1, f.delta.coin);
+                var sz_b: [20]u8 = undefined;
+                funding.set(r, 2, f.delta.szi.normalize().toString(&sz_b) catch "?");
+                var usdc_b: [20]u8 = undefined;
+                const usdc_s = f.delta.usdc.normalize().toString(&usdc_b) catch "0";
+                funding.set(r, 3, usdc_s);
+                funding.row_colors[r] = if (decToF64(f.delta.usdc) >= 0) .positive else .negative;
+                var rate_b: [20]u8 = undefined;
+                funding.set(r, 4, f.delta.fundingRate.normalize().toString(&rate_b) catch "?");
                 funding.n_rows += 1;
             }
         }
 
-        // 5. Order History
+        // 5. Order History (typed)
         blk_hist: {
-            var result = client.historicalOrders(addr) catch break :blk_hist;
-            defer result.deinit();
-            const val = result.json() catch break :blk_hist;
-            const arr = if (val == .array) val.array.items else break :blk_hist;
+            var typed = client.getHistoricalOrders(addr) catch break :blk_hist;
+            defer typed.deinit();
             ord_hist.n_cols = 7;
             ord_hist.setHeader(0, "Time"); ord_hist.setHeader(1, "Coin"); ord_hist.setHeader(2, "Side");
             ord_hist.setHeader(3, "Size"); ord_hist.setHeader(4, "Price"); ord_hist.setHeader(5, "Status");
             ord_hist.setHeader(6, "OID");
-            for (arr) |o| {
+            for (typed.value) |ho| {
                 if (ord_hist.n_rows >= MAX_ROWS) break;
                 const r = ord_hist.n_rows;
-                const order = if (o == .object) (o.object.get("order") orelse o) else o;
-                if (json_mod.getString(order, "coin")) |c| ord_hist.set(r, 1, c);
-                if (json_mod.getString(order, "side")) |s| {
-                    const is_buy = std.mem.eql(u8, s, "B");
-                    ord_hist.set(r, 2, if (is_buy) "Buy" else "Sell");
-                    ord_hist.row_colors[r] = if (is_buy) .positive else .negative;
+                const o = ho.order;
+                ord_hist.set(r, 1, o.coin);
+                const is_buy = std.mem.eql(u8, o.side, "B");
+                ord_hist.set(r, 2, if (is_buy) "Buy" else "Sell");
+                ord_hist.row_colors[r] = if (is_buy) .positive else .negative;
+                var sz_b: [20]u8 = undefined;
+                ord_hist.set(r, 3, o.sz.normalize().toString(&sz_b) catch "?");
+                var px_b: [20]u8 = undefined;
+                ord_hist.set(r, 4, o.limitPx.normalize().toString(&px_b) catch "?");
+                ord_hist.set(r, 5, ho.status);
+                if (std.mem.indexOf(u8, ho.status, "ejected") != null) ord_hist.row_colors[r] = .negative;
+                var ob: [20]u8 = undefined;
+                ord_hist.set(r, 6, std.fmt.bufPrint(&ob, "{d}", .{o.oid}) catch "?");
+                if (ho.statusTimestamp > 0) {
+                    const sec: u64 = @intCast(@mod(@divFloor(@as(i64, @intCast(ho.statusTimestamp)), 1000), 86400));
+                    var tb: [10]u8 = undefined;
+                    ord_hist.set(r, 0, std.fmt.bufPrint(&tb, "{d:0>2}:{d:0>2}:{d:0>2}", .{ sec / 3600, (sec % 3600) / 60, sec % 60 }) catch "?");
                 }
-                if (json_mod.getString(order, "sz")) |s| ord_hist.set(r, 3, s);
-                if (json_mod.getString(order, "limitPx")) |p| ord_hist.set(r, 4, p);
-                if (json_mod.getString(o, "status")) |st| {
-                    ord_hist.set(r, 5, st);
-                    if (std.mem.indexOf(u8, st, "ejected") != null) ord_hist.row_colors[r] = .negative;
-                }
-                if (order == .object) if (order.object.get("oid")) |oid| switch (oid) {
-                    .integer => |i| { var ob: [20]u8 = undefined; ord_hist.set(r, 6, std.fmt.bufPrint(&ob, "{d}", .{i}) catch "?"); },
-                    else => {},
-                };
-                var tb: [10]u8 = undefined;
-                const ts = fmtTimestamp(o, "statusTimestamp", &tb);
-                if (ts.len > 0) ord_hist.set(r, 0, ts);
                 ord_hist.n_rows += 1;
             }
         }
-
         shared.mu.lock();
         defer shared.mu.unlock();
         shared.positions = pos;
@@ -1616,6 +1588,12 @@ const Rest = struct {
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║  8. UTILS                                                       ║
 // ╚══════════════════════════════════════════════════════════════════╝
+
+fn decToF64(d: Decimal) f64 {
+    const m: f64 = @floatFromInt(d.mantissa);
+    const s: f64 = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(d.scale)));
+    return m / s;
+}
 
 fn fmtTimestamp(obj: std.json.Value, key: []const u8, buf: *[10]u8) []const u8 {
     const ts: i64 = if (obj == .object) blk: {
@@ -1652,30 +1630,24 @@ fn checkOrderResult(alloc: std.mem.Allocator, result: *Client.ExchangeResult, st
     };
 }
 
-fn parseFloat(obj: std.json.Value, key: []const u8) f64 {
-    return std.fmt.parseFloat(f64, json_mod.getString(obj, key) orelse return 0) catch 0;
-}
-
 fn fmtF64(buf: *[12]u8, v: f64) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.0}", .{v}) catch "?";
 }
 
-fn buildInfoFromCtx(ctx: std.json.Value) InfoData {
+fn buildInfoFromCtx(ctx: resp_types.AssetContext) InfoData {
     var info = InfoData{};
-    if (json_mod.getString(ctx, "markPx")) |s| info.mark_len = copyTo(&info.mark_buf, s);
-    if (json_mod.getString(ctx, "oraclePx")) |s| info.oracle_len = copyTo(&info.oracle_buf, s);
-    if (json_mod.getString(ctx, "openInterest")) |s| info.oi_len = copyTo(&info.oi_buf, s);
-    if (json_mod.getString(ctx, "funding")) |s| info.funding_len = copyTo(&info.funding_buf, s);
-    const prev_str = json_mod.getString(ctx, "prevDayPx") orelse "0";
-    const mark_str = info.mark();
-    const prev_f = std.fmt.parseFloat(f64, prev_str) catch 0;
-    const mark_f = std.fmt.parseFloat(f64, mark_str) catch 0;
+    if (ctx.markPx) |mp| { var b: [24]u8 = undefined; info.mark_len = copyTo(&info.mark_buf, mp.normalize().toString(&b) catch "0"); }
+    if (ctx.oraclePx) |op| { var b: [24]u8 = undefined; info.oracle_len = copyTo(&info.oracle_buf, op.normalize().toString(&b) catch "0"); }
+    { var b: [24]u8 = undefined; info.oi_len = copyTo(&info.oi_buf, ctx.openInterest.normalize().toString(&b) catch "0"); }
+    { var b: [24]u8 = undefined; info.funding_len = copyTo(&info.funding_buf, ctx.funding.normalize().toString(&b) catch "0"); }
+    const prev_f = if (ctx.prevDayPx) |pp| decToF64(pp) else 0;
+    const mark_f = if (ctx.markPx) |mp| decToF64(mp) else 0;
     if (prev_f > 0) {
         const chg = mark_f - prev_f;
         info.is_negative_change = chg < 0;
         info.change_len = (std.fmt.bufPrint(&info.change_buf, "{d:.0} / {d:.2}%", .{ chg, chg / prev_f * 100 }) catch "").len;
     }
-    const vol_f = std.fmt.parseFloat(f64, json_mod.getString(ctx, "dayNtlVlm") orelse "0") catch 0;
+    const vol_f = if (ctx.dayNtlVlm) |v| decToF64(v) else 0;
     const vs = if (vol_f > 1e9) std.fmt.bufPrint(&info.volume_buf, "${d:.2}B", .{vol_f / 1e9}) catch ""
         else if (vol_f > 1e6) std.fmt.bufPrint(&info.volume_buf, "${d:.1}M", .{vol_f / 1e6}) catch ""
         else std.fmt.bufPrint(&info.volume_buf, "${d:.0}", .{vol_f}) catch "";
