@@ -3,7 +3,6 @@ import { sidebar } from "./sidebar/sidebar";
 
 export default defineConfig({
   title: "hlz — Zig Tooling for Hyperliquid",
-  basePath: "/hlz",
   rootDir: ".",
   sidebar,
   theme: {
