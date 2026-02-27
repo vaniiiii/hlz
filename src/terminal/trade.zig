@@ -86,6 +86,7 @@ const LEVERAGE_MAX: u32 = 125;
 const MAX_ROWS = 32;
 const MAX_COLS = 8;
 const CELL_SZ = 24;
+const STATUS_TTL_MS: i64 = 6000;
 
 const TableData = struct {
     cells: [MAX_ROWS][MAX_COLS][CELL_SZ]u8 = undefined,
@@ -166,6 +167,7 @@ const OrderState = struct {
     price_buf: [16]u8 = .{0} ** 16, price_len: usize = 0,
     status_buf: [48]u8 = undefined, status_len: usize = 0,
     status_is_error: bool = false,
+    status_set_ms: i64 = 0,
 
     fn sizeStr(self: *const OrderState) []const u8 { return self.size_buf[0..self.size_len]; }
     fn priceStr(self: *const OrderState) []const u8 { return self.price_buf[0..self.price_len]; }
@@ -175,6 +177,18 @@ const OrderState = struct {
         @memcpy(self.status_buf[0..n], msg[0..n]);
         self.status_len = n;
         self.status_is_error = err;
+        self.status_set_ms = std.time.milliTimestamp();
+    }
+    fn clearStatus(self: *OrderState) void {
+        self.status_len = 0;
+        self.status_is_error = false;
+        self.status_set_ms = 0;
+    }
+    fn expireStatus(self: *OrderState, now_ms: i64, ttl_ms: i64) bool {
+        if (self.status_len == 0 or self.status_set_ms == 0) return false;
+        if (now_ms - self.status_set_ms < ttl_ms) return false;
+        self.clearStatus();
+        return true;
     }
     fn appendToActive(self: *OrderState, c: u8) void {
         switch (self.field) {
@@ -388,6 +402,8 @@ const WsWorker = struct {
     }
 
     fn runInner(shared: *Shared, allocator: std.mem.Allocator, chain: signing.Chain) !void {
+        var arena_state = std.heap.ArenaAllocator.init(allocator);
+        defer arena_state.deinit();
         var prev_coin_gen: u64 = 0;
         var prev_iv: [4]u8 = .{ 0, 0, 0, 0 };
         var prev_iv_len: u8 = 0;
@@ -456,13 +472,15 @@ const WsWorker = struct {
                     .closed => break,
                     .message => |msg| {
                         const data = ws_types.extractData(msg.raw_json) orelse continue;
+                        const arena = arena_state.allocator();
                         switch (msg.channel) {
-                            .l2Book => decodeAndApplyBook(data, shared, depth),
-                            .trades => decodeAndApplyTrades(data, shared),
-                            .candle => decodeAndApplyCandle(data, shared),
-                            .activeAssetCtx => decodeAndApplyInfo(data, shared),
+                            .l2Book => decodeAndApplyBook(data, shared, depth, arena),
+                            .trades => decodeAndApplyTrades(data, shared, arena),
+                            .candle => decodeAndApplyCandle(data, shared, arena),
+                            .activeAssetCtx => decodeAndApplyInfo(data, shared, arena),
                             else => {},
                         }
+                        _ = arena_state.reset(.retain_capacity);
                     },
                 }
             }
@@ -473,10 +491,8 @@ const WsWorker = struct {
 
     // ── Decode + Apply (parse outside lock, apply under lock) ──
 
-    fn decodeAndApplyBook(data: []const u8, shared: *Shared, depth: usize) void {
-        // data is already extracted from WS message (no wrapper)
-        const parsed = std.json.parseFromSlice(resp_types.L2Book, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
-        defer parsed.deinit();
+    fn decodeAndApplyBook(data: []const u8, shared: *Shared, depth: usize, arena: std.mem.Allocator) void {
+        const parsed = std.json.parseFromSlice(resp_types.L2Book, arena, data, resp_types.ParseOpts) catch return;
         const bl = parsed.value.levels;
 
         var bids: [64]BookLevel = undefined;
@@ -504,10 +520,8 @@ const WsWorker = struct {
         shared.applyBook(bids, asks, eff, @max(bid_cum, ask_cum));
     }
 
-    fn decodeAndApplyTrades(data: []const u8, shared: *Shared) void {
-        // data is already extracted — it's the trade array directly
-        const parsed = std.json.parseFromSlice([]resp_types.Trade, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
-        defer parsed.deinit();
+    fn decodeAndApplyTrades(data: []const u8, shared: *Shared, arena: std.mem.Allocator) void {
+        const parsed = std.json.parseFromSlice([]resp_types.Trade, arena, data, resp_types.ParseOpts) catch return;
         const trade_list = parsed.value;
         const new_count = @min(trade_list.len, MAX_ROWS);
 
@@ -554,10 +568,8 @@ const WsWorker = struct {
         shared.gen += 1;
     }
 
-    fn decodeAndApplyCandle(data: []const u8, shared: *Shared) void {
-        // data is already extracted — it's the candle object directly
-        const parsed = std.json.parseFromSlice(resp_types.Candle, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
-        defer parsed.deinit();
+    fn decodeAndApplyCandle(data: []const u8, shared: *Shared, arena: std.mem.Allocator) void {
+        const parsed = std.json.parseFromSlice(resp_types.Candle, arena, data, resp_types.ParseOpts) catch return;
         const c = parsed.value;
         if (c.t == 0) return;
         shared.applyCandle(.{
@@ -568,11 +580,9 @@ const WsWorker = struct {
         });
     }
 
-    fn decodeAndApplyInfo(data: []const u8, shared: *Shared) void {
-        // data is already extracted — it's {"coin":"BTC","ctx":{...}}
+    fn decodeAndApplyInfo(data: []const u8, shared: *Shared, arena: std.mem.Allocator) void {
         const CtxWrapper = struct { ctx: resp_types.AssetContext = .{} };
-        const parsed = std.json.parseFromSlice(CtxWrapper, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
-        defer parsed.deinit();
+        const parsed = std.json.parseFromSlice(CtxWrapper, arena, data, resp_types.ParseOpts) catch return;
         shared.applyInfo(buildInfoFromCtx(parsed.value.ctx));
     }
 };
@@ -808,7 +818,7 @@ const Render = struct {
         book(buf, &snap.bids, &snap.asks, snap.n_bids, snap.n_asks, snap.max_cum, book_rect);
         tradeTape(buf, &snap.trades, tape_rect);
         orderPanel(buf, ui.coin[0..ui.coin_len], snap.accountValue(), &ui.order, ui.focus == .order_entry, order_rect, snap);
-        bottomTabs(buf, ui.tab, snap, bottom_rect, ui.selected_row, ui.focus == .bottom, ui.scroll_offset);
+        bottomTabs(buf, ui.tab, snap, bottom_rect, ui.selected_row, ui.focus == .bottom, ui.scroll_offset, ui.order.statusStr(), ui.order.status_is_error);
 
         const focus_rect = switch (ui.focus) {
             .chart => chart_rect, .book => book_rect, .tape => tape_rect,
@@ -1025,14 +1035,6 @@ const Render = struct {
             y += 1;
         }
         if (y + 1 < content_bottom) y += 1;
-        // Status
-        if (y < content_bottom) {
-            const st = o.statusStr();
-            if (st.len > 0) {
-                buf.putStr(ix, y, st, if (o.status_is_error) s_bold_red else s_bold_green);
-                y += 1;
-            }
-        }
         // Button
         if (y < content_bottom) {
             const bg = if (o.side == .buy) hl_buy else hl_sell;
@@ -1045,7 +1047,17 @@ const Render = struct {
         }
     }
 
-    fn bottomTabs(buf: *Buffer, active: ActiveTab, snap: *const Snapshot, rect: Rect, selected: usize, focused: bool, scroll: usize) void {
+    fn bottomTabs(
+        buf: *Buffer,
+        active: ActiveTab,
+        snap: *const Snapshot,
+        rect: Rect,
+        selected: usize,
+        focused: bool,
+        scroll: usize,
+        status: []const u8,
+        status_is_error: bool,
+    ) void {
         const tabs = [_][]const u8{ " Positions ", " Open Orders ", " Trade History ", " Funding ", " Order History " };
         var tx: u16 = rect.x + 1;
         for (tabs, 0..) |lbl, i| {
@@ -1082,7 +1094,16 @@ const Render = struct {
             .open_orders => if (focused) "x:cancel  \xe2\x86\x91\xe2\x86\x93:select  q:quit  /:coin  Tab:panel  i:interval" else "q:quit  /:coin  Tab:panel  i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  0:snap  +/-:depth",
             else => "q:quit  /:coin  Tab:panel  i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  0:snap  +/-:depth",
         };
-        buf.putStr(rect.x + 1, rect.y + rect.h - 1, hint, s_dim);
+        const footer_y = rect.y + rect.h - 1;
+        const st_style: Style = if (status_is_error) s_bold_red else s_green;
+        const st = if (status.len > 0) status else "Ready";
+        var sb: [96]u8 = undefined;
+        const st_prefix = std.fmt.bufPrint(&sb, "Status: {s}", .{st}) catch "Status";
+        const max_status = rect.w / 2;
+        const st_text = st_prefix[0..@min(st_prefix.len, max_status)];
+        buf.putStr(rect.x + 1, footer_y, st_text, st_style);
+        const hint_x = rect.x + rect.w -| @as(u16, @intCast(hint.len)) -| 1;
+        buf.putStr(hint_x, footer_y, hint, s_dim);
     }
 
     fn table(buf: *Buffer, tbl: *const TableData, rect: Rect, selected: ?usize, scroll: ?usize) void {
@@ -1184,6 +1205,7 @@ const Render = struct {
         if (!can_set) buf.putStr(ix, mrect.y + 7, "Asset not resolved yet", s_bold_red);
         buf.putStr(ix, mrect.y + mrect.h -| 3, "h/l: +/-1  H/L: +/-5  c:mode  Enter:apply  Esc:q", s_dim);
     }
+
 };
 
 // ╔══════════════════════════════════════════════════════════════════╗
@@ -1193,6 +1215,20 @@ const Render = struct {
 const Orders = struct {
     const zig = @import("hyperzig");
     const types = zig.hypercore.types;
+
+    fn makeCloid(seed: u64) types.Cloid {
+        var cloid = types.ZERO_CLOID;
+        cloid[0] = @intCast((seed >> 56) & 0xff);
+        cloid[1] = @intCast((seed >> 48) & 0xff);
+        cloid[2] = @intCast((seed >> 40) & 0xff);
+        cloid[3] = @intCast((seed >> 32) & 0xff);
+        cloid[4] = @intCast((seed >> 24) & 0xff);
+        cloid[5] = @intCast((seed >> 16) & 0xff);
+        cloid[6] = @intCast((seed >> 8) & 0xff);
+        cloid[7] = @intCast(seed & 0xff);
+        if (seed == 0) cloid[15] = 1;
+        return cloid;
+    }
 
     fn execute(order: *OrderState, client: *Client, coin: []const u8, config: *const Config, asset_index: ?usize) void {
         _ = coin;
@@ -1213,7 +1249,7 @@ const Orders = struct {
             if (p.len == 0) { order.setStatus("Enter price first", true); return; }
             break :blk Decimal.fromString(p) catch { order.setStatus("Invalid price format", true); return; };
         };
-        const ord = types.OrderRequest{ .asset = asset, .is_buy = order.side == .buy, .limit_px = px_dec, .sz = sz_dec, .reduce_only = false, .order_type = .{ .limit = .{ .tif = tif } }, .cloid = types.ZERO_CLOID };
+        const ord = types.OrderRequest{ .asset = asset, .is_buy = order.side == .buy, .limit_px = px_dec, .sz = sz_dec, .reduce_only = false, .order_type = .{ .limit = .{ .tif = tif } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
         var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
             order.setStatus("Order failed (network)", true);
@@ -1269,9 +1305,9 @@ const Orders = struct {
         // Close = opposite side, reduce_only, market
         const is_long = std.mem.eql(u8, side_str, "LONG");
         const px_dec = if (is_long) Decimal.fromString("1") catch unreachable else Decimal.fromString("999999") catch unreachable;
-        const ord = types.OrderRequest{ .asset = asset, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = types.ZERO_CLOID };
-        const arr = [1]types.OrderRequest{ord};
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+        const ord = types.OrderRequest{ .asset = asset, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = makeCloid(nonce) };
+        const arr = [1]types.OrderRequest{ord};
         var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
             ui.order.setStatus("Close failed (network)", true);
             return;
@@ -1702,6 +1738,7 @@ pub fn run(allocator: std.mem.Allocator, config_in: Config, coin: []const u8) !v
             else Input.handleKey(key, &ui, &app.running, &ui_client, &config, &shared);
             dirty = true;
         }
+        if (ui.order.expireStatus(std.time.milliTimestamp(), STATUS_TTL_MS)) dirty = true;
         if (!app.running) break;
 
         // 2. Sync UI → shared
