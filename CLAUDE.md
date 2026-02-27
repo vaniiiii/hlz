@@ -210,7 +210,7 @@ fn decodeAndApplyBook(data: []const u8, shared: *Shared) void {
 - Signature JSON: `{"r":"0x...","s":"0x...","v":27}` (structured, not flat hex)
 - Body must include `"vaultAddress":null,"expiresAfter":null`
 - Market orders use `FrontendMarket` TIF with slippage-capped price (not IOC with extreme price)
-- Market/close slippage: 3% from BBO (matches Hyperliquid TWAP convention). Exchange rejects >95% from mark.
+- Market/close slippage: 0.5% from BBO. Exchange rejects >95% from mark.
 - WS requires app-level ping/pong: server sends `Ping`, client sends `{"method":"pong"}`
 
 ## SDK typing strategy

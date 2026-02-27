@@ -1,22 +1,22 @@
 
 const std = @import("std");
 const posix = std.posix;
-const hyperzig = @import("hyperzig");
+const hlz = @import("hlz");
 const args_mod = @import("args.zig");
 const config_mod = @import("config.zig");
 const output_mod = @import("output.zig");
 const keystore = @import("keystore.zig");
-const client_mod = hyperzig.hypercore.client;
-const response = hyperzig.hypercore.response;
-const types = hyperzig.hypercore.types;
-const signing = hyperzig.hypercore.signing;
-const json_mod = hyperzig.hypercore.json;
-const ws_types = hyperzig.hypercore.ws;
+const client_mod = hlz.hypercore.client;
+const response = hlz.hypercore.response;
+const types = hlz.hypercore.types;
+const signing = hlz.hypercore.signing;
+const json_mod = hlz.hypercore.json;
+const ws_types = hlz.hypercore.ws;
 const WsConnection = ws_types.Connection;
-const Decimal = hyperzig.math.decimal.Decimal;
+const Decimal = hlz.math.decimal.Decimal;
 
 const Client = client_mod.Client;
-const Signer = hyperzig.crypto.signer.Signer;
+const Signer = hlz.crypto.signer.Signer;
 const Column = output_mod.Column;
 const Style = output_mod.Style;
 const Writer = output_mod.Writer;
@@ -1128,7 +1128,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
         if (is_buy) {
             if (bl[1].len > 0) {
                 const ask_px = decToF64(bl[1][0].px);
-                const slippage_px = ask_px * 1.01;
+                const slippage_px = ask_px * 1.005;
                 var sl_buf: [32]u8 = undefined;
                 break :blk Decimal.fromString(slippageFmt(&sl_buf, slippage_px)) catch Decimal.fromString("999999") catch unreachable;
             }
@@ -1136,7 +1136,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
         } else {
             if (bl[0].len > 0) {
                 const bid_px = decToF64(bl[0][0].px);
-                const slippage_px = bid_px * 0.99;
+                const slippage_px = bid_px * 0.995;
                 var sl_buf: [32]u8 = undefined;
                 break :blk Decimal.fromString(slippageFmt(&sl_buf, slippage_px)) catch Decimal.fromString("0.01") catch unreachable;
             }

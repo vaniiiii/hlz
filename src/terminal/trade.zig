@@ -1486,9 +1486,8 @@ const Render = struct {
 const Orders = struct {
     const zig = @import("hlz");
     const types = zig.hypercore.types;
-    // Market order slippage cap: 3% from BBO (matches Hyperliquid TWAP convention)
-    const SLIPPAGE_BUY = Decimal.fromString("1.03") catch unreachable;
-    const SLIPPAGE_SELL = Decimal.fromString("0.97") catch unreachable;
+    const SLIPPAGE_BUY = Decimal.fromString("1.005") catch unreachable; // 0.5% above ask
+    const SLIPPAGE_SELL = Decimal.fromString("0.995") catch unreachable; // 0.5% below bid
 
     fn makeCloid(seed: u64) types.Cloid {
         var cloid = types.ZERO_CLOID;
