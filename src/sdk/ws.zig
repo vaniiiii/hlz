@@ -118,21 +118,7 @@ pub fn parseChannel(text: []const u8) MessageChannel {
     const end = std.mem.indexOfPos(u8, text, start, "\"") orelse return .unknown;
     const channel = text[start..end];
 
-    if (std.mem.eql(u8, channel, "trades")) return .trades;
-    if (std.mem.eql(u8, channel, "l2Book")) return .l2Book;
-    if (std.mem.eql(u8, channel, "allMids")) return .allMids;
-    if (std.mem.eql(u8, channel, "candle")) return .candle;
-    if (std.mem.eql(u8, channel, "bbo")) return .bbo;
-    if (std.mem.eql(u8, channel, "orderUpdates")) return .orderUpdates;
-    if (std.mem.eql(u8, channel, "userFills")) return .userFills;
-    if (std.mem.eql(u8, channel, "userEvents")) return .userEvents;
-    if (std.mem.eql(u8, channel, "subscriptionResponse")) return .subscriptionResponse;
-    if (std.mem.eql(u8, channel, "userTwapSliceFills")) return .userTwapSliceFills;
-    if (std.mem.eql(u8, channel, "userTwapHistory")) return .userTwapHistory;
-    if (std.mem.eql(u8, channel, "activeAssetCtx")) return .activeAssetCtx;
-    if (std.mem.eql(u8, channel, "activeAssetData")) return .activeAssetData;
-    if (std.mem.eql(u8, channel, "webData2")) return .webData2;
-    return .unknown;
+    return std.meta.stringToEnum(MessageChannel, channel) orelse .unknown;
 }
 
 pub fn extractData(text: []const u8) ?[]const u8 {
