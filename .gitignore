@@ -21,3 +21,7 @@ skills/
 
 # Reference repos (symlinks to local clones)
 reference
+src/crypto/
+src/encoding/
+src/hypercore/
+src/math/
