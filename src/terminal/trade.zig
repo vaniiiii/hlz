@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const hyperzig = @import("hyperzig");
 const client_mod = hyperzig.hypercore.client;
 const ws_types = hyperzig.hypercore.ws;
@@ -87,6 +88,7 @@ const MAX_ROWS = 32;
 const MAX_COLS = 8;
 const CELL_SZ = 24;
 const STATUS_TTL_MS: i64 = 6000;
+const PERF_SAMPLE_MS: i64 = 1000;
 
 const TableData = struct {
     cells: [MAX_ROWS][MAX_COLS][CELL_SZ]u8 = undefined,
@@ -237,6 +239,10 @@ const UiState = struct {
     selected_row: usize = 0,
     scroll_offset: usize = 0,
     leverage: LeverageState = .{},
+    show_perf: bool = false,
+    rss_kb: u64 = 0,
+    peak_rss_kb: u64 = 0,
+    perf_last_ms: i64 = 0,
 };
 
 /// Shared state (workers write, UI snapshots under lock)
@@ -662,6 +668,7 @@ const Input = struct {
                     else if (ui.tab == .positions) Orders.closePosition(ui, client, config, shared);
                 },
                 'v', 'V' => openLeverageModal(ui, shared),
+                'd', 'D' => ui.show_perf = !ui.show_perf,
                 'r', 'R' => if (ui.focus == .order_entry) { ui.order = OrderState{}; ui.order.setStatus("Reset", false); },
                 else => {},
             },
@@ -685,6 +692,7 @@ const Input = struct {
                 's', 'S' => o.side = .sell,
                 'm', 'M' => { o.order_type = if (o.order_type == .market) .limit else .market; if (o.order_type == .limit) o.field = .size; },
                 'L' => openLeverageModal(ui, shared),
+                'd', 'D' => ui.show_perf = !ui.show_perf,
                 'q' => { ui.focus = .chart; },
                 'r', 'R' => { o.* = OrderState{}; o.setStatus("Reset", false); },
                 else => {},
@@ -831,6 +839,20 @@ const Render = struct {
             .tape => " \xe2\x97\x86 TRADES ", .order_entry => " \xe2\x97\x86 ORDER ",
             .bottom => " \xe2\x97\x86 TABS ",
         };
+        if (ui.show_perf) {
+            var mb: [96]u8 = undefined;
+            const rss_mib = @as(f64, @floatFromInt(ui.rss_kb)) / 1024.0;
+            const peak_mib = @as(f64, @floatFromInt(ui.peak_rss_kb)) / 1024.0;
+            const flush_ms = @as(f64, @floatFromInt(BufMod.stats.flush_ns)) / 1_000_000.0;
+            const mtxt = std.fmt.bufPrint(&mb, " RSS {d:.2}M  Peak {d:.2}M  \xe2\x88\x86{d}  Flush {d:.2}ms ", .{
+                rss_mib,
+                peak_mib,
+                BufMod.stats.cells_changed,
+                flush_ms,
+            }) catch "";
+            const mx = w -| @as(u16, @intCast(mtxt.len)) -| @as(u16, @intCast(badge.len)) -| 2;
+            if (mx > 1) buf.putStr(mx, 0, mtxt, s_dim);
+        }
         buf.putStr(w -| @as(u16, @intCast(badge.len)) -| 1, 0, badge, .{ .fg = hl_text, .bg = hl_accent, .bold = true });
         if (ui.leverage.open) leverageModal(buf, ui, snap, .{ .x = 0, .y = 0, .w = w, .h = h });
 
@@ -874,7 +896,7 @@ const Render = struct {
         while (sx < rect.w) : (sx += 1) buf.putStr(rect.x + sx, rect.y + 1, "\xe2\x94\x80", s_dim);
         buf.putStr(rect.x + 1, rect.y + 1, "Fund ", s_dim);
         buf.putStr(rect.x + 6, rect.y + 1, info.funding(), s_green);
-        const hint = "i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  Tab:panel";
+        const hint = "i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  Tab:panel  D:perf";
         buf.putStr(rect.x + rect.w -| @as(u16, @intCast(hint.len)) -| 1, rect.y + 1, hint, s_dim);
         const bx = rect.x + 7 + @as(u16, @intCast(@min(info.funding().len, 16))) + 2;
         buf.putStr(bx, rect.y + 1, "[", s_dim);
@@ -1669,6 +1691,72 @@ fn checkOrderResult(alloc: std.mem.Allocator, result: *Client.ExchangeResult, st
 
 fn fmtF64(buf: *[12]u8, v: f64) []const u8 {
     return std.fmt.bufPrint(buf, "{d:.0}", .{v}) catch "?";
+}
+
+fn samplePerf(ui: *UiState) bool {
+    const now = std.time.milliTimestamp();
+    if (ui.perf_last_ms != 0 and now - ui.perf_last_ms < PERF_SAMPLE_MS) return false;
+    ui.perf_last_ms = now;
+
+    const rss_kb = currentRssKb();
+    if (rss_kb == ui.rss_kb and !ui.show_perf) return false;
+    ui.rss_kb = rss_kb;
+    if (rss_kb > ui.peak_rss_kb) ui.peak_rss_kb = rss_kb;
+    return true;
+}
+
+fn currentRssKb() u64 {
+    return switch (builtin.os.tag) {
+        .macos => currentRssKbMac(),
+        .linux => currentRssKbLinux(),
+        else => 0,
+    };
+}
+
+const ProcTaskInfo = extern struct {
+    pti_virtual_size: u64,
+    pti_resident_size: u64,
+    pti_total_user: u64,
+    pti_total_system: u64,
+    pti_threads_user: u64,
+    pti_threads_system: u64,
+    pti_policy: i32,
+    pti_faults: i32,
+    pti_pageins: i32,
+    pti_cow_faults: i32,
+    pti_messages_sent: i32,
+    pti_messages_received: i32,
+    pti_syscalls_mach: i32,
+    pti_syscalls_unix: i32,
+    pti_csw: i32,
+    pti_threadnum: i32,
+    pti_numrunning: i32,
+    pti_priority: i32,
+};
+
+extern fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: ?*anyopaque, buffersize: c_int) c_int;
+
+fn currentRssKbMac() u64 {
+    const PROC_PIDTASKINFO: c_int = 4;
+    var ti: ProcTaskInfo = undefined;
+    const pid: c_int = std.c.getpid();
+    const rc = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, @sizeOf(ProcTaskInfo));
+    if (rc <= 0) return 0;
+    return ti.pti_resident_size / 1024;
+}
+
+fn currentRssKbLinux() u64 {
+    var file = std.fs.openFileAbsolute("/proc/self/statm", .{}) catch return 0;
+    defer file.close();
+    var buf: [128]u8 = undefined;
+    const n = file.readAll(&buf) catch return 0;
+    if (n == 0) return 0;
+    var it = std.mem.tokenizeAny(u8, buf[0..n], " \t\r\n");
+    _ = it.next() orelse return 0; // total pages
+    const rss_pages_s = it.next() orelse return 0;
+    const rss_pages = std.fmt.parseInt(u64, rss_pages_s, 10) catch return 0;
+    const page_kb: u64 = std.heap.page_size_min / 1024;
+    return rss_pages * page_kb;
 }
 
 fn buildInfoFromCtx(ctx: resp_types.AssetContext) InfoData {
