@@ -944,7 +944,7 @@ fn writeActionJson(writer: anytype, action_data: anytype) !void {
             if (i > 0) try writer.writeAll(",");
             try writeOrderJson(writer, order);
         }
-        try std.fmt.format(writer, "],\"grouping\":\"{s}\"}}", .{action_data.grouping.toString()});
+        try std.fmt.format(writer, "],\"grouping\":\"{s}\"}}", .{@tagName(action_data.grouping)});
     } else if (T == types.BatchCancel) {
         try writer.writeAll("{\"type\":\"cancel\",\"cancels\":[");
         for (action_data.cancels, 0..) |c, i| {
@@ -958,7 +958,7 @@ fn writeActionJson(writer: anytype, action_data: anytype) !void {
 }
 
 fn writeActionJsonTagged(writer: anytype, action_data: anytype, tag: types.ActionTag) !void {
-    try std.fmt.format(writer, "{{\"type\":\"{s}\"", .{tag.toString()});
+    try std.fmt.format(writer, "{{\"type\":\"{s}\"", .{@tagName(tag)});
     const T = @TypeOf(action_data);
     if (T == types.BatchCancelCloid) {
         try writer.writeAll(",\"cancels\":[");
@@ -1028,7 +1028,7 @@ fn writeOrderJson(writer: anytype, order: types.OrderRequest) !void {
     // Order type
     switch (order.order_type) {
         .limit => |lim| {
-            try std.fmt.format(writer, ",\"t\":{{\"limit\":{{\"tif\":\"{s}\"}}}}", .{lim.tif.toString()});
+            try std.fmt.format(writer, ",\"t\":{{\"limit\":{{\"tif\":\"{s}\"}}}}", .{@tagName(lim.tif)});
         },
         .trigger => |trig| {
             var tpx_buf: [64]u8 = undefined;
@@ -1036,7 +1036,7 @@ fn writeOrderJson(writer: anytype, order: types.OrderRequest) !void {
             try std.fmt.format(writer, ",\"t\":{{\"trigger\":{{\"isMarket\":{},\"triggerPx\":\"{s}\",\"tpsl\":\"{s}\"}}}}", .{
                 trig.is_market,
                 tpx_str,
-                trig.tpsl.toString(),
+                @tagName(trig.tpsl),
             });
         },
     }

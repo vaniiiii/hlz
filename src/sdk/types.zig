@@ -35,49 +35,9 @@ pub const Side = enum {
 };
 
 /// Time in force — PascalCase serialization (matching Rust's #[serde(rename = "PascalCase")])
-pub const TimeInForce = enum {
-    Alo,
-    Ioc,
-    Gtc,
-    FrontendMarket,
-
-    pub fn toString(self: TimeInForce) []const u8 {
-        return switch (self) {
-            .Alo => "Alo",
-            .Ioc => "Ioc",
-            .Gtc => "Gtc",
-            .FrontendMarket => "FrontendMarket",
-        };
-    }
-};
-
-/// Take-profit / stop-loss indicator.
-pub const TpSl = enum {
-    tp,
-    sl,
-
-    pub fn toString(self: TpSl) []const u8 {
-        return switch (self) {
-            .tp => "tp",
-            .sl => "sl",
-        };
-    }
-};
-
-/// Order grouping strategy — camelCase serialization.
-pub const OrderGrouping = enum {
-    na,
-    normalTpsl,
-    positionTpsl,
-
-    pub fn toString(self: OrderGrouping) []const u8 {
-        return switch (self) {
-            .na => "na",
-            .normalTpsl => "normalTpsl",
-            .positionTpsl => "positionTpsl",
-        };
-    }
-};
+pub const TimeInForce = enum { Alo, Ioc, Gtc, FrontendMarket };
+pub const TpSl = enum { tp, sl };
+pub const OrderGrouping = enum { na, normalTpsl, positionTpsl };
 
 
 /// Order type placement — serialized as tagged union.
@@ -241,7 +201,7 @@ pub fn packOrderRequest(p: *msgpack.Packer, order: OrderRequest) msgpack.PackErr
             try p.packStr("limit");
             try p.packMapHeader(1);
             try p.packStr("tif");
-            try p.packStr(lim.tif.toString());
+            try p.packStr(@tagName(lim.tif));
         },
         .trigger => |trig| {
             try p.packMapHeader(1);
@@ -254,7 +214,7 @@ pub fn packOrderRequest(p: *msgpack.Packer, order: OrderRequest) msgpack.PackErr
             const tpx_str = trig.trigger_px.normalize().toString(&tpx_buf) catch return error.BufferOverflow;
             try p.packStr(tpx_str);
             try p.packStr("tpsl");
-            try p.packStr(trig.tpsl.toString());
+            try p.packStr(@tagName(trig.tpsl));
         },
     }
 
@@ -277,7 +237,7 @@ pub fn packBatchOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!v
 
     // grouping: enum string
     try p.packStr("grouping");
-    try p.packStr(batch.grouping.toString());
+    try p.packStr(@tagName(batch.grouping));
 }
 
 /// Pack a Cancel to msgpack.
@@ -321,26 +281,6 @@ pub const ActionTag = enum {
     multiSig,
     noop,
 
-    pub fn toString(self: ActionTag) []const u8 {
-        return switch (self) {
-            .order => "order",
-            .batchModify => "batchModify",
-            .cancel => "cancel",
-            .cancelByCloid => "cancelByCloid",
-            .scheduleCancel => "scheduleCancel",
-            .usdSend => "usdSend",
-            .sendAsset => "sendAsset",
-            .spotSend => "spotSend",
-            .evmUserModify => "evmUserModify",
-            .approveAgent => "approveAgent",
-            .convertToMultiSigUser => "convertToMultiSigUser",
-            .updateIsolatedMargin => "updateIsolatedMargin",
-            .updateLeverage => "updateLeverage",
-            .setReferrer => "setReferrer",
-            .multiSig => "multiSig",
-            .noop => "noop",
-        };
-    }
 };
 
 /// Pack an Action::Order to msgpack (with serde tag = "type").
@@ -350,7 +290,7 @@ pub fn packActionOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!
 
     // type: "order"
     try p.packStr("type");
-    try p.packStr(ActionTag.order.toString());
+    try p.packStr(@tagName(ActionTag.order));
 
     // orders: array
     try p.packStr("orders");
@@ -361,7 +301,7 @@ pub fn packActionOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!
 
     // grouping: enum string
     try p.packStr("grouping");
-    try p.packStr(batch.grouping.toString());
+    try p.packStr(@tagName(batch.grouping));
 }
 
 /// Pack an Action::Cancel to msgpack (with serde tag).
@@ -369,7 +309,7 @@ pub fn packActionCancel(p: *msgpack.Packer, batch: BatchCancel) msgpack.PackErro
     try p.packMapHeader(2); // type + cancels
 
     try p.packStr("type");
-    try p.packStr(ActionTag.cancel.toString());
+    try p.packStr(@tagName(ActionTag.cancel));
 
     try p.packStr("cancels");
     try p.packArrayHeader(@intCast(batch.cancels.len));
@@ -392,7 +332,7 @@ fn packCancelByCloid(p: *msgpack.Packer, cancel: CancelByCloid) msgpack.PackErro
 pub fn packActionCancelByCloid(p: *msgpack.Packer, batch: BatchCancelCloid) msgpack.PackError!void {
     try p.packMapHeader(2);
     try p.packStr("type");
-    try p.packStr(ActionTag.cancelByCloid.toString());
+    try p.packStr(@tagName(ActionTag.cancelByCloid));
     try p.packStr("cancels");
     try p.packArrayHeader(@intCast(batch.cancels.len));
     for (batch.cancels) |cancel| {
@@ -419,7 +359,7 @@ fn packModify(p: *msgpack.Packer, modify: Modify) msgpack.PackError!void {
 pub fn packActionBatchModify(p: *msgpack.Packer, batch: BatchModify) msgpack.PackError!void {
     try p.packMapHeader(2);
     try p.packStr("type");
-    try p.packStr(ActionTag.batchModify.toString());
+    try p.packStr(@tagName(ActionTag.batchModify));
     try p.packStr("modifies");
     try p.packArrayHeader(@intCast(batch.modifies.len));
     for (batch.modifies) |modify| {
@@ -431,7 +371,7 @@ pub fn packActionBatchModify(p: *msgpack.Packer, batch: BatchModify) msgpack.Pac
 pub fn packActionScheduleCancel(p: *msgpack.Packer, sc: ScheduleCancel) msgpack.PackError!void {
     try p.packMapHeader(2);
     try p.packStr("type");
-    try p.packStr(ActionTag.scheduleCancel.toString());
+    try p.packStr(@tagName(ActionTag.scheduleCancel));
     try p.packStr("time");
     if (sc.time) |t| {
         try p.packUint(t);
@@ -444,7 +384,7 @@ pub fn packActionScheduleCancel(p: *msgpack.Packer, sc: ScheduleCancel) msgpack.
 pub fn packActionUpdateIsolatedMargin(p: *msgpack.Packer, uim: UpdateIsolatedMargin) msgpack.PackError!void {
     try p.packMapHeader(4);
     try p.packStr("type");
-    try p.packStr(ActionTag.updateIsolatedMargin.toString());
+    try p.packStr(@tagName(ActionTag.updateIsolatedMargin));
     try p.packStr("asset");
     try p.packUint(@intCast(uim.asset));
     try p.packStr("isBuy");
@@ -457,7 +397,7 @@ pub fn packActionUpdateIsolatedMargin(p: *msgpack.Packer, uim: UpdateIsolatedMar
 pub fn packActionUpdateLeverage(p: *msgpack.Packer, ul: UpdateLeverage) msgpack.PackError!void {
     try p.packMapHeader(4);
     try p.packStr("type");
-    try p.packStr(ActionTag.updateLeverage.toString());
+    try p.packStr(@tagName(ActionTag.updateLeverage));
     try p.packStr("asset");
     try p.packUint(@intCast(ul.asset));
     try p.packStr("isCross");
@@ -470,7 +410,7 @@ pub fn packActionUpdateLeverage(p: *msgpack.Packer, ul: UpdateLeverage) msgpack.
 pub fn packActionSetReferrer(p: *msgpack.Packer, sr: SetReferrer) msgpack.PackError!void {
     try p.packMapHeader(2);
     try p.packStr("type");
-    try p.packStr(ActionTag.setReferrer.toString());
+    try p.packStr(@tagName(ActionTag.setReferrer));
     try p.packStr("code");
     try p.packStr(sr.code);
 }
@@ -479,7 +419,7 @@ pub fn packActionSetReferrer(p: *msgpack.Packer, sr: SetReferrer) msgpack.PackEr
 pub fn packActionEvmUserModify(p: *msgpack.Packer, using_big_blocks: bool) msgpack.PackError!void {
     try p.packMapHeader(2);
     try p.packStr("type");
-    try p.packStr(ActionTag.evmUserModify.toString());
+    try p.packStr(@tagName(ActionTag.evmUserModify));
     try p.packStr("usingBigBlocks");
     try p.packBool(using_big_blocks);
 }
@@ -488,7 +428,7 @@ pub fn packActionEvmUserModify(p: *msgpack.Packer, using_big_blocks: bool) msgpa
 pub fn packActionNoop(p: *msgpack.Packer) msgpack.PackError!void {
     try p.packMapHeader(1);
     try p.packStr("type");
-    try p.packStr(ActionTag.noop.toString());
+    try p.packStr(@tagName(ActionTag.noop));
 }
 
 
