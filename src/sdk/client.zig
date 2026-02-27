@@ -559,8 +559,6 @@ pub const Client = struct {
     }
 
     // ── Typed Info Endpoints ──────────────────────────────────────
-    // Return parsed structs instead of raw JSON. Caller must deinit().
-    // Use the untyped versions above for JSON passthrough (--json flag).
 
     const R = resp_types;
     const Parsed = std.json.Parsed;
@@ -819,7 +817,6 @@ pub const Client = struct {
     fn infoTyped(self: *Client, comptime T: type, body: []const u8) !std.json.Parsed(T) {
         var raw = try self.infoRequestDyn(body);
         defer raw.deinit();
-        // Parse directly from raw body bytes — no intermediate Value tree
         return std.json.parseFromSlice(T, self.allocator, raw.body, resp_types.ParseOpts) catch
             return error.JsonParseFailed;
     }
