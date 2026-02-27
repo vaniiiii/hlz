@@ -17,9 +17,9 @@ pub const Chain = enum {
     mainnet,
     testnet,
 
-    pub fn isMainnet(self: Chain) bool {
-        return self == .mainnet;
-    }
+    pub fn isMainnet(self: Chain) bool { return self == .mainnet; }
+    pub fn name(self: Chain) []const u8 { return if (self == .mainnet) "Mainnet" else "Testnet"; }
+    pub fn sigChainId(self: Chain) []const u8 { return if (self == .mainnet) "0xa4b1" else "0x66eee"; }
 };
 
 pub const SignError = signer.SignError || msgpack.PackError || error{BufferOverflow};

@@ -338,13 +338,13 @@ pub const Client = struct {
         time: u64,
     ) !ExchangeResult {
         const sig = try eip712.signUsdSend(s, self.chain.isMainnet(), destination, amount, time);
-        const chain_str = if (self.chain.isMainnet()) "Mainnet" else "Testnet";
+        const chain_str = self.chain.name();
 
         var body_buf: [1024]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
             \\{{"action":{{"type":"usdSend","signatureChainId":"{s}","hyperliquidChain":"{s}","destination":"{s}","amount":"{s}","time":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
         , .{
-            if (self.chain.isMainnet()) "0xa4b1" else "0x66eee",
+            self.chain.sigChainId(),
             chain_str,
             destination,
             amount,
@@ -366,8 +366,8 @@ pub const Client = struct {
         time: u64,
     ) !ExchangeResult {
         const sig = try signing.signSpotSend(s, self.chain, destination, token, amount, time);
-        const chain_str = if (self.chain.isMainnet()) "Mainnet" else "Testnet";
-        const sig_chain_id = if (self.chain.isMainnet()) "0xa4b1" else "0x66eee";
+        const chain_str = self.chain.name();
+        const sig_chain_id = self.chain.sigChainId();
 
         var body_buf: [1024]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
@@ -389,8 +389,8 @@ pub const Client = struct {
         nonce: u64,
     ) !ExchangeResult {
         const sig = try signing.signSendAsset(s, self.chain, destination, source_dex, destination_dex, token, amount, from_sub_account, nonce);
-        const chain_str = if (self.chain.isMainnet()) "Mainnet" else "Testnet";
-        const sig_chain_id = if (self.chain.isMainnet()) "0xa4b1" else "0x66eee";
+        const chain_str = self.chain.name();
+        const sig_chain_id = self.chain.sigChainId();
 
         var body_buf: [2048]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
@@ -409,8 +409,8 @@ pub const Client = struct {
     ) !ExchangeResult {
         const name = agent_name orelse "";
         const sig = try signing.signApproveAgent(s, self.chain, agent_address, name, nonce);
-        const chain_str = if (self.chain.isMainnet()) "Mainnet" else "Testnet";
-        const sig_chain_id = if (self.chain.isMainnet()) "0xa4b1" else "0x66eee";
+        const chain_str = self.chain.name();
+        const sig_chain_id = self.chain.sigChainId();
 
         var body_buf: [1024]u8 = undefined;
         const body = if (agent_name != null)
@@ -432,8 +432,8 @@ pub const Client = struct {
         nonce: u64,
     ) !ExchangeResult {
         const sig = try signing.signConvertToMultiSig(s, self.chain, signers_json, nonce);
-        const chain_str = if (self.chain.isMainnet()) "Mainnet" else "Testnet";
-        const sig_chain_id = if (self.chain.isMainnet()) "0xa4b1" else "0x66eee";
+        const chain_str = self.chain.name();
+        const sig_chain_id = self.chain.sigChainId();
 
         var body_buf: [2048]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
