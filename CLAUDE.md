@@ -212,6 +212,82 @@ fn decodeAndApplyBook(data: []const u8, shared: *Shared) void {
 - Market orders use `FrontendMarket` TIF (not IOC with extreme price)
 - WS requires app-level ping/pong: server sends `Ping`, client sends `{"method":"pong"}`
 
+## SDK typing strategy
+
+All API responses use typed structs via `std.json.parseFromSlice`. Every endpoint
+has a `get*` method returning `Parsed(T)`. Raw methods exist only for `--json` passthrough.
+
+### Command pattern
+
+```zig
+if (w.format == .json) {
+    var raw = try client.clearinghouseState(addr, null);
+    defer raw.deinit();
+    try w.jsonRaw(raw.body);
+    return;
+}
+var typed = try client.getClearinghouseState(addr, null);
+defer typed.deinit();
+// use typed.value...
+```
+
+Never fetch twice (once raw, once typed). Branch early on `--json`.
+
+### Where raw JSON is correct
+
+- **Exchange responses** (place, cancel, send): Variable structure, checked via `isOk()`.
+- **allMids**: Returns `{"BTC": "65000.5", ...}` — dynamic-key dict. No auto-parse for this.
+- **metaAndAssetCtxs**: Heterogeneous `[meta, [ctx, ...]]` tuple. Custom parse in `getMetaAndAssetCtxs()`.
+
+### WS message data
+
+`ws_types.extractData()` strips the outer `{"channel":"...","data":VALUE}` wrapper.
+Decode functions receive VALUE directly — parse as the type, not wrapped in a `data` field.
+
+### Adding a new typed endpoint
+
+1. Add response struct to `response.zig` (camelCase fields, defaults for forward compat)
+2. Add `get*` method to `client.zig` calling `self.infoTyped(T, body)`
+3. Use in CLI/terminal directly — no intermediate parseTyped helper
+
+## Post-work checklist
+
+Run through after every change before committing:
+
+### Code quality
+- [ ] No `catch {}` on non-trivial operations (network, file I/O) — at minimum log or set status
+- [ ] No stale comments referencing old patterns ("compat", "migrate", "to be removed", "fall back")
+- [ ] No personal conversation artifacts in code ("as we discussed", "TODO: ask about")
+- [ ] No chatty comments explaining obvious code — section headers only
+- [ ] Dead code removed (unused functions, imports, variables)
+
+### Zig patterns
+- [ ] `errdefer` paired with every allocation that could fail before ownership transfer
+- [ ] No `page_allocator` in hot paths — use arena with `reset(.retain_capacity)` for repeated allocs
+- [ ] `@tagName` instead of manual `toString()` when tag names match desired strings
+- [ ] `std.meta.stringToEnum` instead of if/else string comparison chains for enums
+- [ ] `anytype` only for writer patterns — use `comptime T: type` or tagged unions for data
+
+### SDK consistency
+- [ ] One fetch per command — branch on `--json` early, don't fetch raw AND typed
+- [ ] No `parseTyped` indirection — call typed client methods (`get*`) directly
+- [ ] Response types have defaults on all fields (`= Decimal.ZERO`, `= ""`, `= 0`)
+- [ ] `ParseOpts = .{ .ignore_unknown_fields = true, .allocate = .alloc_always }`
+- [ ] camelCase field names matching JSON keys exactly
+
+### File structure
+- [ ] lib/ has zero Hyperliquid knowledge — pure primitives
+- [ ] sdk/ never imports cli/ or tui/ or terminal/
+- [ ] tui/ never imports sdk/ — standalone framework
+- [ ] Arrows point down only: terminal/cli → tui/sdk → lib
+- [ ] Single-file modules use numbered section headers, not scattered helpers
+
+### Output & UX
+- [ ] Pipe-aware: JSON when piped, tables on TTY
+- [ ] `--json` passthrough uses raw body, not re-serialized typed data
+- [ ] No interactive prompts — power tool, immediate execution
+- [ ] Exit codes: 0=OK, 1=error, 2=usage, 3=auth, 4=network
+
 ## Key metrics
 
 | Metric | Value |
