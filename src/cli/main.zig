@@ -9,7 +9,7 @@ const commands = @import("commands.zig");
 const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
-const VERSION = "0.4.4";
+const VERSION = "0.4.5";
 
 // Exit codes (documented in --help, stable contract)
 const EXIT_OK: u8 = 0;
