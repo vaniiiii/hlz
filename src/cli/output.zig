@@ -37,16 +37,22 @@ pub const Style = struct {
 pub const Writer = struct {
     is_tty: bool,
     format: OutputFormat,
+    quiet: bool = false,
 
     pub fn init(format: OutputFormat) Writer {
-        const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
+        const is_tty = std.posix.isatty(std.fs.File.stdout().handle) and !noColor();
         return .{ .is_tty = is_tty, .format = format };
     }
 
     pub fn initAuto(format: OutputFormat, explicit: bool) Writer {
-        const is_tty = std.posix.isatty(std.fs.File.stdout().handle);
-        const effective = if (!is_tty and !explicit and format == .pretty) .json else format;
+        const raw_tty = std.posix.isatty(std.fs.File.stdout().handle);
+        const is_tty = raw_tty and !noColor();
+        const effective = if (!raw_tty and !explicit and format == .pretty) .json else format;
         return .{ .is_tty = is_tty, .format = effective };
+    }
+
+    fn noColor() bool {
+        return std.posix.getenv("NO_COLOR") != null;
     }
 
     fn out(self: *Writer, data: []const u8) !void {
@@ -93,7 +99,7 @@ pub const Writer = struct {
     // ── Panel ─────────────────────────────────────────────────
 
     pub fn heading(self: *Writer, title: []const u8) !void {
-        if (self.format != .pretty) return;
+        if (self.format != .pretty or self.quiet) return;
         try self.style(Style.subtle);
         try self.out("  \xe2\x94\x81\xe2\x94\x81\xe2\x94\x81"); // ━━━
         try self.style(Style.reset);
@@ -110,12 +116,12 @@ pub const Writer = struct {
     }
 
     pub fn footer(self: *Writer) !void {
-        if (self.format != .pretty) return;
+        if (self.format != .pretty or self.quiet) return;
         try self.out("\n");
     }
 
     pub fn panelSep(self: *Writer) !void {
-        if (self.format != .pretty) return;
+        if (self.format != .pretty or self.quiet) return;
         try self.style(Style.subtle);
         try self.out("  ");
         var i: usize = 0;

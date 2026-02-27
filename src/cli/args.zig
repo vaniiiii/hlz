@@ -6,6 +6,7 @@
 const std = @import("std");
 
 pub const Command = union(enum) {
+    keys: KeysArgs,
     mids: MidsArgs,
     positions: UserQuery,
     orders: UserQuery,
@@ -31,6 +32,7 @@ pub const Command = union(enum) {
     referral: ReferralArgs,
     twap: TwapArgs,
     batch: BatchArgs,
+    approve_agent: ApproveAgentArgs,
     config: void,
     help: void,
     version: void,
@@ -59,16 +61,15 @@ pub const MarketArgs = struct {
 pub const OrderArgs = struct {
     coin: []const u8,
     size: []const u8,
-    price: ?[]const u8 = null, // null = market order
-    slippage: ?[]const u8 = null, // for market orders: max slippage price
+    price: ?[]const u8 = null,
+    slippage: ?[]const u8 = null,
     reduce_only: bool = false,
     tif: []const u8 = "gtc",
-    // Trigger orders
-    trigger_px: ?[]const u8 = null, // --trigger-above or --trigger-below
-    trigger_is_tp: bool = true, // true = take-profit, false = stop-loss
-    // Bracket: attach TP/SL to a limit order
-    tp: ?[]const u8 = null, // --tp <price>
-    sl: ?[]const u8 = null, // --sl <price>
+    trigger_px: ?[]const u8 = null,
+    trigger_is_tp: bool = true,
+    tp: ?[]const u8 = null,
+    sl: ?[]const u8 = null,
+    dry_run: bool = false,
 };
 
 pub const CancelArgs = struct {
@@ -162,13 +163,30 @@ pub const TwapArgs = struct {
 pub const BatchArgs = struct {
     orders: [16]?[]const u8 = .{null} ** 16,
     count: usize = 0,
+    stdin: bool = false,
+};
+
+pub const KeysArgs = struct {
+    action: KeysAction = .ls,
+    name: ?[]const u8 = null,
+    key_hex: ?[]const u8 = null,
+    password: ?[]const u8 = null,
+};
+
+pub const KeysAction = enum { ls, new, import_, rm, export_, default };
+
+pub const ApproveAgentArgs = struct {
+    agent_address: ?[]const u8 = null,
+    agent_name: ?[]const u8 = null,
 };
 
 pub const GlobalFlags = struct {
     chain: []const u8 = "mainnet",
     output: OutputFormat = .pretty,
     output_explicit: bool = false,
+    quiet: bool = false,
     key: ?[]const u8 = null,
+    key_name: ?[]const u8 = null,
     address: ?[]const u8 = null,
 };
 
@@ -217,8 +235,12 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         } else if (std.mem.eql(u8, arg, "--json")) {
             flags.output = .json;
             flags.output_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--quiet") or std.mem.eql(u8, arg, "-q")) {
+            flags.quiet = true;
         } else if (std.mem.eql(u8, arg, "--key") or std.mem.eql(u8, arg, "-k")) {
             flags.key = args_iter.next() orelse return error.MissingArgument;
+        } else if (std.mem.eql(u8, arg, "--key-name")) {
+            flags.key_name = args_iter.next() orelse return error.MissingArgument;
         } else if (std.mem.eql(u8, arg, "--address") or std.mem.eql(u8, arg, "-a")) {
             flags.address = args_iter.next() orelse return error.MissingArgument;
         } else {
@@ -234,7 +256,9 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
     const cmd_str = positionals[0];
     const rest = positionals[1..pos_count];
 
-    const command: Command = if (std.mem.eql(u8, cmd_str, "mids") or std.mem.eql(u8, cmd_str, "mid"))
+    const command: Command = if (std.mem.eql(u8, cmd_str, "keys") or std.mem.eql(u8, cmd_str, "key"))
+        .{ .keys = parseKeys(rest) }
+    else if (std.mem.eql(u8, cmd_str, "mids") or std.mem.eql(u8, cmd_str, "mid"))
         .{ .mids = parseMids(rest) }
     else if (std.mem.eql(u8, cmd_str, "positions") or std.mem.eql(u8, cmd_str, "pos"))
         .{ .positions = parseUserQuery(rest) }
@@ -284,6 +308,8 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         .{ .twap = parseTwap(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "batch"))
         .{ .batch = parseBatch(rest) }
+    else if (std.mem.eql(u8, cmd_str, "approve-agent") or std.mem.eql(u8, cmd_str, "approve"))
+        .{ .approve_agent = parseApproveAgent(rest) }
     else if (std.mem.eql(u8, cmd_str, "config"))
         .{ .config = {} }
     else if (std.mem.eql(u8, cmd_str, "help") or std.mem.eql(u8, cmd_str, "--help") or std.mem.eql(u8, cmd_str, "-h"))
@@ -373,6 +399,8 @@ fn parseOrder(args: []const []const u8) ?OrderArgs {
         } else if (std.mem.eql(u8, a, "--slippage") and i + 1 < args.len) {
             i += 1;
             result.slippage = args[i];
+        } else if (std.mem.eql(u8, a, "--dry-run") or std.mem.eql(u8, a, "-n")) {
+            result.dry_run = true;
         } else if (std.mem.eql(u8, a, "--trigger-above") and i + 1 < args.len) {
             i += 1;
             result.trigger_px = args[i];
@@ -575,9 +603,65 @@ fn parseTwap(args: []const []const u8) ?TwapArgs {
 fn parseBatch(args: []const []const u8) BatchArgs {
     var result = BatchArgs{};
     for (args) |a| {
-        if (result.count < 16) {
+        if (std.mem.eql(u8, a, "--stdin")) {
+            result.stdin = true;
+        } else if (result.count < 16) {
             result.orders[result.count] = a;
             result.count += 1;
+        }
+    }
+    return result;
+}
+
+fn parseApproveAgent(args: []const []const u8) ApproveAgentArgs {
+    var result = ApproveAgentArgs{};
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--name") and i + 1 < args.len) {
+            i += 1;
+            result.agent_name = args[i];
+        } else if (!std.mem.startsWith(u8, a, "--")) {
+            if (result.agent_address == null) result.agent_address = a;
+        }
+    }
+    return result;
+}
+
+fn parseKeys(args: []const []const u8) KeysArgs {
+    var result = KeysArgs{};
+    if (args.len == 0) return result;
+
+    const action = args[0];
+    if (std.mem.eql(u8, action, "new")) {
+        result.action = .new;
+    } else if (std.mem.eql(u8, action, "import")) {
+        result.action = .import_;
+    } else if (std.mem.eql(u8, action, "rm") or std.mem.eql(u8, action, "remove")) {
+        result.action = .rm;
+    } else if (std.mem.eql(u8, action, "export")) {
+        result.action = .export_;
+    } else if (std.mem.eql(u8, action, "default") or std.mem.eql(u8, action, "use")) {
+        result.action = .default;
+    } else if (std.mem.eql(u8, action, "ls") or std.mem.eql(u8, action, "list")) {
+        result.action = .ls;
+    } else {
+        // Bare name = ls or maybe the name for another action
+        result.name = action;
+        return result;
+    }
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--password") and i + 1 < args.len) {
+            i += 1;
+            result.password = args[i];
+        } else if ((std.mem.eql(u8, a, "--private-key") or std.mem.eql(u8, a, "--pk")) and i + 1 < args.len) {
+            i += 1;
+            result.key_hex = args[i];
+        } else if (!std.mem.startsWith(u8, a, "--")) {
+            result.name = a;
         }
     }
     return result;

@@ -11,6 +11,7 @@ const hyperzig = @import("hyperzig");
 const signer_mod = hyperzig.crypto.signer;
 const signing = hyperzig.hypercore.signing;
 const args_mod = @import("args.zig");
+const keystore = @import("keystore.zig");
 
 const Signer = signer_mod.Signer;
 const Chain = signing.Chain;
@@ -19,10 +20,17 @@ pub const Config = struct {
     key_hex: ?[]const u8 = null,
     address: ?[]const u8 = null,
     chain: Chain = .mainnet,
+    output_override: ?args_mod.OutputFormat = null,
     allocator: std.mem.Allocator,
     env_buf: ?[]u8 = null,
+    key_alloc: ?[]u8 = null,
+    derived_addr: [42]u8 = undefined,
 
     pub fn deinit(self: *Config) void {
+        if (self.key_alloc) |k| {
+            @memset(k, 0); // zero before free
+            self.allocator.free(k);
+        }
         if (self.env_buf) |buf| self.allocator.free(buf);
     }
 
@@ -31,8 +39,23 @@ pub const Config = struct {
         return Signer.fromHex(hex);
     }
 
-    pub fn getAddress(self: Config) ?[]const u8 {
+    pub fn getAddress(self: *const Config) ?[]const u8 {
         if (self.address) |a| return a;
+        // Derive from key if available
+        if (self.key_hex) |hex| {
+            const signer = Signer.fromHex(hex) catch return null;
+            const addr = signer.address;
+            const self_mut = @constCast(self);
+            self_mut.derived_addr[0] = '0';
+            self_mut.derived_addr[1] = 'x';
+            const chars = "0123456789abcdef";
+            for (addr, 0..) |b, i| {
+                self_mut.derived_addr[2 + i * 2] = chars[b >> 4];
+                self_mut.derived_addr[2 + i * 2 + 1] = chars[b & 0xf];
+            }
+            self_mut.address = &self_mut.derived_addr;
+            return &self_mut.derived_addr;
+        }
         return null;
     }
 
@@ -58,6 +81,13 @@ pub fn load(allocator: std.mem.Allocator, flags: args_mod.GlobalFlags) Config {
     if (getEnv("HL_CHAIN")) |v| {
         if (std.mem.eql(u8, v, "testnet")) config.chain = .testnet;
     }
+    if (getEnv("HL_OUTPUT")) |v| {
+        if (args_mod.OutputFormat.fromStr(v)) |fmt| {
+            if (flags.output == .pretty and !flags.output_explicit) {
+                config.output_override = fmt;
+            }
+        }
+    }
     // Compatibility with e2e tests
     if (config.key_hex == null) {
         if (getEnv("TRADING_KEY")) |v| config.key_hex = v;
@@ -68,11 +98,44 @@ pub fn load(allocator: std.mem.Allocator, flags: args_mod.GlobalFlags) Config {
     if (flags.address) |a| config.address = a;
     if (std.mem.eql(u8, flags.chain, "testnet")) config.chain = .testnet;
 
+    // --key-name: decrypt keystore to get key
+    if (config.key_hex == null) {
+        const key_name = flags.key_name orelse blk: {
+            // Check for default key
+            var dbuf: [64]u8 = undefined;
+            break :blk keystore.getDefaultNameBuf(&dbuf);
+        };
+        if (key_name) |name| {
+            const pw = getEnv("HL_PASSWORD");
+            if (pw) |password| {
+                const data = keystore.load(allocator, name) catch null;
+                if (data) |ks_data| {
+                    const priv = keystore.decrypt(allocator, ks_data, password) catch null;
+                    allocator.free(ks_data);
+                    if (priv) |pk| {
+                        // Convert to hex string
+                        const hex = allocator.alloc(u8, 64) catch null;
+                        if (hex) |h| {
+                            const chars = "0123456789abcdef";
+                            for (pk, 0..) |b, i| {
+                                h[i * 2] = chars[b >> 4];
+                                h[i * 2 + 1] = chars[b & 0xf];
+                            }
+                            config.key_hex = h;
+                            config.key_alloc = h;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     return config;
 }
 
 fn getEnv(name: []const u8) ?[]const u8 {
-    return std.posix.getenv(name);
+    const v = std.posix.getenv(name) orelse return null;
+    return if (v.len == 0) null else v;
 }
 
 fn loadEnvFile(allocator: std.mem.Allocator, config: *Config) void {

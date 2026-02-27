@@ -5,8 +5,14 @@ const hyperzig = @import("hyperzig");
 const args_mod = @import("args.zig");
 const config_mod = @import("config.zig");
 const output_mod = @import("output.zig");
+const keystore = @import("keystore.zig");
 const client_mod = hyperzig.hypercore.client;
 const response = hyperzig.hypercore.response;
+
+/// Parse typed struct from raw InfoResult body. Caller must deinit().
+fn parseTyped(comptime T: type, alloc: std.mem.Allocator, result: *Client.InfoResult) ?std.json.Parsed(T) {
+    return std.json.parseFromSlice(T, alloc, result.body, response.ParseOpts) catch null;
+}
 const types = hyperzig.hypercore.types;
 const signing = hyperzig.hypercore.signing;
 const json_mod = hyperzig.hypercore.json;
@@ -15,6 +21,7 @@ const WsConnection = ws_types.Connection;
 const Decimal = hyperzig.math.decimal.Decimal;
 
 const Client = client_mod.Client;
+const Signer = hyperzig.crypto.signer.Signer;
 const Column = output_mod.Column;
 const Style = output_mod.Style;
 const Writer = output_mod.Writer;
@@ -90,6 +97,268 @@ fn runListView(
                 else => {},
             }
         }
+    }
+}
+
+pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !void {
+    const password = a.password orelse std.posix.getenv("HL_PASSWORD") orelse {
+        // For ls, no password needed
+        if (a.action == .ls) return keysLs(allocator, w);
+        if (a.action == .rm) return keysRm(w, a.name orelse {
+            try w.err("usage: hl keys rm <name>");
+            return;
+        });
+        if (a.action == .default) return keysDefault(w, a.name orelse {
+            try w.err("usage: hl keys default <name>");
+            return;
+        });
+        try w.err("password required: --password <PASS> or HL_PASSWORD env");
+        return;
+    };
+
+    switch (a.action) {
+        .ls => return keysLs(allocator, w),
+        .new => {
+            const name = a.name orelse {
+                try w.err("usage: hl keys new <name> --password <PASS>");
+                return;
+            };
+            // Generate random 32-byte private key
+            var priv: [32]u8 = undefined;
+            std.crypto.random.bytes(&priv);
+            const json = keystore.encrypt(allocator, priv, password) catch |e| {
+                try w.errFmt("encrypt: {s}", .{@errorName(e)});
+                return;
+            };
+            defer allocator.free(json);
+            keystore.save(name, json) catch |e| {
+                try w.errFmt("save: {s}", .{@errorName(e)});
+                return;
+            };
+            const signer = Signer.init(priv) catch return;
+            var addr_buf: [42]u8 = undefined;
+            addr_buf[0] = '0';
+            addr_buf[1] = 'x';
+            const hex_chars = "0123456789abcdef";
+            for (signer.address, 0..) |b, i| {
+                addr_buf[2 + i * 2] = hex_chars[b >> 4];
+                addr_buf[2 + i * 2 + 1] = hex_chars[b & 0xf];
+            }
+            // Zero out key
+            @memset(&priv, 0);
+            if (w.format == .json) {
+                try w.print("{{\"status\":\"created\",\"name\":\"{s}\",\"address\":\"{s}\"}}\n", .{ name, addr_buf });
+            } else {
+                try w.success(name);
+                try w.print("  address: {s}\n  path:    ~/.hl/keys/{s}.json\n", .{ addr_buf, name });
+                try w.nl();
+                try w.styled(Style.muted, "  To use as API wallet, approve on your main account:\n");
+                try w.print("    hl approve-agent {s}\n", .{addr_buf});
+                try w.styled(Style.muted, "  Or approve via web UI:\n");
+                try w.print("    https://app.hyperliquid.xyz/API\n", .{});
+            }
+        },
+        .import_ => {
+            const name = a.name orelse {
+                try w.err("usage: hl keys import <name> --private-key <HEX> --password <PASS>");
+                return;
+            };
+            const hex = a.key_hex orelse std.posix.getenv("HL_KEY") orelse {
+                try w.err("provide key: --private-key <HEX> or HL_KEY env");
+                return;
+            };
+            const signer = Signer.fromHex(hex) catch {
+                try w.err("invalid private key hex");
+                return;
+            };
+            var priv: [32]u8 = signer.private_key;
+            const json = keystore.encrypt(allocator, priv, password) catch |e| {
+                try w.errFmt("encrypt: {s}", .{@errorName(e)});
+                return;
+            };
+            defer allocator.free(json);
+            keystore.save(name, json) catch |e| {
+                try w.errFmt("save: {s}", .{@errorName(e)});
+                return;
+            };
+            @memset(&priv, 0);
+            var addr_buf: [42]u8 = undefined;
+            addr_buf[0] = '0';
+            addr_buf[1] = 'x';
+            const hex_chars = "0123456789abcdef";
+            for (signer.address, 0..) |b, i| {
+                addr_buf[2 + i * 2] = hex_chars[b >> 4];
+                addr_buf[2 + i * 2 + 1] = hex_chars[b & 0xf];
+            }
+            if (w.format == .json) {
+                try w.print("{{\"status\":\"imported\",\"name\":\"{s}\",\"address\":\"{s}\"}}\n", .{ name, addr_buf });
+            } else {
+                try w.success(name);
+                try w.print("  address: {s}\n  path: ~/.hl/keys/{s}.json\n", .{ addr_buf, name });
+            }
+        },
+        .export_ => {
+            const name = a.name orelse {
+                try w.err("usage: hl keys export <name> --password <PASS>");
+                return;
+            };
+            const data = keystore.load(allocator, name) catch {
+                try w.errFmt("key \"{s}\" not found", .{name});
+                return;
+            };
+            defer allocator.free(data);
+            var priv = keystore.decrypt(allocator, data, password) catch |e| {
+                if (e == error.BadPassword) {
+                    try w.err("wrong password");
+                } else {
+                    try w.errFmt("decrypt: {s}", .{@errorName(e)});
+                }
+                return;
+            };
+            // Print hex (stderr for safety, stdout only if piped/json)
+            var hex_buf: [66]u8 = undefined;
+            hex_buf[0] = '0';
+            hex_buf[1] = 'x';
+            const hc = "0123456789abcdef";
+            for (priv, 0..) |b, i| {
+                hex_buf[2 + i * 2] = hc[b >> 4];
+                hex_buf[2 + i * 2 + 1] = hc[b & 0xf];
+            }
+            @memset(&priv, 0);
+            if (w.format == .json) {
+                try w.print("{{\"name\":\"{s}\",\"key\":\"{s}\"}}\n", .{ name, hex_buf });
+            } else {
+                try w.print("{s}\n", .{hex_buf});
+            }
+            @memset(&hex_buf, 0);
+        },
+        .rm => {
+            const name = a.name orelse {
+                try w.err("usage: hl keys rm <name>");
+                return;
+            };
+            return keysRm(w, name);
+        },
+        .default => {
+            const name = a.name orelse {
+                try w.err("usage: hl keys default <name>");
+                return;
+            };
+            return keysDefault(w, name);
+        },
+    }
+}
+
+fn keysLs(allocator: std.mem.Allocator, w: *Writer) !void {
+    const entries = keystore.list(allocator) catch {
+        try w.err("failed to list keys");
+        return;
+    };
+    defer allocator.free(entries);
+
+    if (entries.len == 0) {
+        if (w.format == .json) {
+            try w.jsonRaw("[]");
+        } else {
+            try w.styled(Style.muted, "  no keys. Run: hl keys new <name> --password <PASS>\n");
+        }
+        return;
+    }
+
+    if (w.format == .json) {
+        try w.print("[", .{});
+        for (entries, 0..) |e, i| {
+            if (i > 0) try w.print(",", .{});
+            try w.print("{{\"name\":\"{s}\",\"address\":\"{s}\",\"default\":{s}}}", .{
+                e.getName(),
+                e.address,
+                if (e.is_default) "true" else "false",
+            });
+        }
+        try w.print("]\n", .{});
+        return;
+    }
+
+    try w.heading("KEYS");
+    for (entries) |e| {
+        const default_mark: []const u8 = if (e.is_default) " *" else "";
+        try w.print("  ", .{});
+        try w.styled(Style.bold_cyan, e.getName());
+        try w.styled(Style.muted, "  ");
+        try w.styled(Style.white, &e.address);
+        try w.styled(Style.yellow, default_mark);
+        try w.nl();
+    }
+    try w.footer();
+}
+
+fn keysRm(w: *Writer, name: []const u8) !void {
+    keystore.remove(name) catch {
+        try w.errFmt("key \"{s}\" not found", .{name});
+        return;
+    };
+    if (w.format == .json) {
+        try w.print("{{\"status\":\"removed\",\"name\":\"{s}\"}}\n", .{name});
+    } else {
+        try w.success("removed");
+        try w.print("  {s}\n", .{name});
+    }
+}
+
+fn keysDefault(w: *Writer, name: []const u8) !void {
+    // Verify key exists
+    const home = std.posix.getenv("HOME") orelse "";
+    var pbuf: [576]u8 = undefined;
+    const kpath = std.fmt.bufPrint(&pbuf, "{s}/.hl/keys/{s}.json", .{ home, name }) catch {
+        try w.errFmt("key \"{s}\" not found", .{name});
+        return;
+    };
+    std.fs.cwd().access(kpath, .{}) catch {
+        try w.errFmt("key \"{s}\" not found", .{name});
+        return;
+    };
+    keystore.setDefault(name) catch {
+        try w.err("failed to set default");
+        return;
+    };
+    if (w.format == .json) {
+        try w.print("{{\"status\":\"default\",\"name\":\"{s}\"}}\n", .{name});
+    } else {
+        try w.success("default set");
+        try w.print("  {s}\n", .{name});
+    }
+}
+
+pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.ApproveAgentArgs) !void {
+    const agent_addr = a.agent_address orelse {
+        try w.err("usage: hl approve-agent <ADDRESS> [--name <NAME>]");
+        try w.nl();
+        try w.styled(Style.muted, "  Or approve via web UI:\n");
+        const url: []const u8 = if (config.chain == .mainnet) "https://app.hyperliquid.xyz/API" else "https://app.hyperliquid-testnet.xyz/API";
+        try w.print("  {s}\n", .{url});
+        return;
+    };
+    const key = config.key_hex orelse { try w.err("private key required"); return; };
+    const signer = Signer.fromHex(key) catch { try w.err("invalid key"); return; };
+    var client = switch (config.chain) { .mainnet => Client.mainnet(allocator), .testnet => Client.testnet(allocator) };
+    defer client.deinit();
+    const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+    var result = client.approveAgent(signer, agent_addr, a.agent_name, nonce) catch |e| {
+        try w.errFmt("approve failed: {s}", .{@errorName(e)});
+        return;
+    };
+    defer result.deinit();
+    if (result.isOk() catch false) {
+        if (w.format == .json) {
+            try w.print("{{\"status\":\"approved\",\"agent\":\"{s}\"}}\n", .{agent_addr});
+        } else {
+            try w.success("Agent approved");
+            try w.print("  {s}\n", .{agent_addr});
+        }
+    } else {
+        const val = result.json() catch { try w.err("Agent approval rejected"); return; };
+        const resp = json_mod.getString(val, "response") orelse "rejected";
+        try w.errFmt("Approval failed: {s}", .{resp});
     }
 }
 
@@ -225,8 +494,17 @@ pub fn positions(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         return;
     }
 
-    const val = try result.json();
-    const pos_arr = json_mod.getArray(val, "assetPositions") orelse &[_]std.json.Value{};
+    // Typed parse for display, raw for JSON passthrough
+    var typed = client.getClearinghouseState(addr, null) catch {
+        // Fall back to raw
+        const val = try result.json();
+        try w.heading("POSITIONS");
+        try w.print("parse error\n", .{});
+        _ = val;
+        return;
+    };
+    defer typed.deinit();
+    const state = typed.value;
 
     try w.heading("POSITIONS");
     const hdr = [_]Column{
@@ -240,34 +518,32 @@ pub fn positions(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
     };
     try w.tableHeader(&hdr);
 
-    for (pos_arr) |item| {
-        const pos = response.PositionData.fromJson(item) orelse continue;
+    for (state.assetPositions) |ap| {
+        const pos = ap.position;
         var szi_buf: [32]u8 = undefined;
         var entry_buf: [32]u8 = undefined;
         var pnl_buf: [32]u8 = undefined;
 
-        const szi = pos.szi orelse continue;
+        const szi = pos.szi;
         const szi_str = szi.normalize().toString(&szi_buf) catch continue;
         if (szi.mantissa == 0) continue;
 
         const is_short = szi.isNegative();
-        // ▲ LONG / ▼ SHORT with color
         var side_buf: [16]u8 = undefined;
         const side_str: []const u8 = if (is_short)
             std.fmt.bufPrint(&side_buf, "\xe2\x96\xbc SHORT", .{}) catch "SHORT"
         else
             std.fmt.bufPrint(&side_buf, "\xe2\x96\xb2 LONG", .{}) catch "LONG";
         const side_color: []const u8 = if (is_short) Style.red else Style.green;
-        const entry_str = decStr(pos.entry_px, &entry_buf);
+        const entry_str = decStr(pos.entryPx, &entry_buf);
         var val_buf: [32]u8 = undefined;
-        const val_str = decStr(pos.position_value, &val_buf);
-        const pnl_str = decStr(pos.unrealized_pnl, &pnl_buf);
+        const val_str = decStr(pos.positionValue, &val_buf);
+        const pnl_str = decStr(pos.unrealizedPnl, &pnl_buf);
 
-        // ROE = pnl / margin_used * 100, rendered as badge
         var roe_buf: [16]u8 = undefined;
         const roe_f = blk: {
-            const pnl_f = if (pos.unrealized_pnl) |p| decToF64(p) else break :blk @as(f64, 0);
-            const margin_f = if (pos.margin_used) |m| decToF64(m) else break :blk @as(f64, 0);
+            const pnl_f = if (pos.unrealizedPnl) |p| decToF64(p) else break :blk @as(f64, 0);
+            const margin_f = if (pos.marginUsed) |m| decToF64(m) else break :blk @as(f64, 0);
             if (margin_f == 0) break :blk @as(f64, 0);
             break :blk pnl_f / margin_f * 100.0;
         };
@@ -288,7 +564,7 @@ pub fn positions(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
             .{ .text = abs_str, .width = 10, .align_right = true },
             .{ .text = entry_str, .width = 10, .align_right = true, .color = Style.muted },
             .{ .text = val_str, .width = 10, .align_right = true },
-            .{ .text = pnl_str, .width = 10, .align_right = true, .color = Writer.pnlColor(pos.unrealized_pnl) },
+            .{ .text = pnl_str, .width = 10, .align_right = true, .color = Writer.pnlColor(pos.unrealizedPnl) },
             .{ .text = roe_str, .width = 8, .align_right = true, .color = roe_color },
         };
         try w.tableRow(&cols);
@@ -350,11 +626,12 @@ pub fn orders(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
         return;
     }
 
-    const val = try result.json();
-    const arr = if (val == .array) val.array.items else {
+    var parsed = parseTyped([]response.BasicOrder, allocator, &result) orelse {
         try w.styled(Style.dim, "  No orders found\n");
         return;
     };
+    defer parsed.deinit();
+    const open_orders = parsed.value;
 
     try w.heading("OPEN ORDERS");
     const hdr = [_]Column{
@@ -366,8 +643,7 @@ pub fn orders(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     };
     try w.tableHeader(&hdr);
 
-    for (arr) |item| {
-        const ord = response.BasicOrder.fromJson(item) orelse continue;
+    for (open_orders) |ord| {
         var sz_buf: [32]u8 = undefined;
         var px_buf: [32]u8 = undefined;
         var oid_buf: [20]u8 = undefined;
@@ -378,8 +654,8 @@ pub fn orders(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
         const cols = [_]Column{
             .{ .text = ord.coin, .width = 8, .color = Style.cyan },
             .{ .text = side_str, .width = 6, .color = side_color },
-            .{ .text = decStr(ord.sz, &sz_buf), .width = 12, .align_right = true },
-            .{ .text = decStr(ord.limit_px, &px_buf), .width = 12, .align_right = true },
+            .{ .text = decFmt(ord.sz, &sz_buf), .width = 12, .align_right = true },
+            .{ .text = decFmt(ord.limitPx, &px_buf), .width = 12, .align_right = true },
             .{ .text = std.fmt.bufPrint(&oid_buf, "{d}", .{ord.oid}) catch "?", .width = 12, .align_right = true, .color = Style.dim },
         };
         try w.tableRow(&cols);
@@ -434,7 +710,7 @@ pub fn fills(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
             .{ .text = decStr(fill.sz, &sz_buf), .width = 12, .align_right = true },
             .{ .text = decStr(fill.px, &px_buf), .width = 12, .align_right = true },
             .{ .text = decStr(fill.fee, &fee_buf), .width = 10, .align_right = true, .color = Style.dim },
-            .{ .text = decStr(fill.closed_pnl, &pnl_buf), .width = 12, .align_right = true, .color = Writer.pnlColor(fill.closed_pnl) },
+            .{ .text = decStr(fill.closedPnl, &pnl_buf), .width = 12, .align_right = true, .color = Writer.pnlColor(fill.closedPnl) },
         };
         try w.tableRow(&cols);
     }
@@ -471,7 +747,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         var av_buf: [32]u8 = undefined;
         try w.print("  ", .{});
         try w.styled(Style.bold_white, "$");
-        try w.styled(Style.bold_white, decStr(m.account_value, &av_buf));
+        try w.styled(Style.bold_white, decStr(m.accountValue, &av_buf));
         try w.nl();
         try w.nl();
 
@@ -489,14 +765,14 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         try w.style(Style.muted);
         try w.print("  margin ", .{});
         try w.style(Style.reset);
-        try w.styled(Style.white, decStr(m.total_margin_used, &mu_buf));
+        try w.styled(Style.white, decStr(m.totalMarginUsed, &mu_buf));
         try w.style(Style.muted);
         try w.print("  free ", .{});
         try w.style(Style.reset);
         try w.styled(Style.white, decStr(withdrawable, &wd_buf));
 
-        const av_f = if (m.account_value) |av| decToF64(av) else 0.0;
-        const mu_f = if (m.total_margin_used) |mu| decToF64(mu) else 0.0;
+        const av_f = decToF64(m.accountValue);
+        const mu_f = decToF64(m.totalMarginUsed);
         const health_pct: f64 = if (mu_f > 0 and av_f > 0)
             @max(0, @min(100, 100.0 - (mu_f / av_f * 100.0)))
         else
@@ -523,7 +799,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         var nz: usize = 0;
         for (bal_arr) |item| {
             const b = response.UserBalance.fromJson(item) orelse continue;
-            const total_f = if (b.total) |t| decToF64(t) else 0.0;
+            const total_f = decToF64(b.total);
             if (total_f != 0) nz += 1;
         }
         if (nz > 0) {
@@ -539,13 +815,13 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
                 const b = response.UserBalance.fromJson(item) orelse continue;
                 var total_buf: [32]u8 = undefined;
                 var hold_buf: [32]u8 = undefined;
-                const total_f = if (b.total) |t| decToF64(t) else 0.0;
+                const total_f = decToF64(b.total);
                 if (total_f == 0) continue;
-                const hold_f = if (b.hold) |h| decToF64(h) else 0.0;
-                const hold_str: []const u8 = if (hold_f != 0) decStr(b.hold, &hold_buf) else "";
+                const hold_f = decToF64(b.hold);
+                const hold_str: []const u8 = if (hold_f != 0) decFmt(b.hold, &hold_buf) else "";
                 const cols = [_]Column{
                     .{ .text = b.coin, .width = 10, .color = Style.cyan },
-                    .{ .text = decStr(b.total, &total_buf), .width = 18, .align_right = true },
+                    .{ .text = decFmt(b.total, &total_buf), .width = 18, .align_right = true },
                     .{ .text = hold_str, .width = 14, .align_right = true, .color = Style.muted },
                 };
                 try w.tableRow(&cols);
@@ -571,15 +847,15 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
                         else
                             null;
                         if (dm) |m| {
-                            const av_f = if (m.account_value) |av| decToF64(av) else 0.0;
+                            const av_f = decToF64(m.accountValue);
                             if (av_f == 0) continue;
                             var title_buf: [32]u8 = undefined;
                             const title = std.fmt.bufPrint(&title_buf, "DEX \xc2\xb7 {s}", .{dex_name}) catch "DEX";
                             try w.heading(title);
                             var dav_buf: [32]u8 = undefined;
                             var dmu_buf: [32]u8 = undefined;
-                            try w.kv("Account Value", decStr(m.account_value, &dav_buf));
-                            try w.kv("Margin Used", decStr(m.total_margin_used, &dmu_buf));
+                            try w.kv("Account Value", decStr(m.accountValue, &dav_buf));
+                            try w.kv("Margin Used", decStr(m.totalMarginUsed, &dmu_buf));
                         }
                     }
                 }
@@ -642,8 +918,8 @@ pub fn perps(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         var dec_buf: [8]u8 = undefined;
         const cols = [_]Column{
             .{ .text = m.name, .width = 12, .color = Style.cyan },
-            .{ .text = std.fmt.bufPrint(&lev_buf, "{d}x", .{m.max_leverage}) catch "?", .width = 8, .align_right = true, .color = Style.yellow },
-            .{ .text = std.fmt.bufPrint(&dec_buf, "{d}", .{m.sz_decimals}) catch "?", .width = 7, .align_right = true },
+            .{ .text = std.fmt.bufPrint(&lev_buf, "{d}x", .{m.maxLeverage}) catch "?", .width = 8, .align_right = true, .color = Style.yellow },
+            .{ .text = std.fmt.bufPrint(&dec_buf, "{d}", .{m.szDecimals}) catch "?", .width = 7, .align_right = true },
         };
         try w.tableRow(&cols);
         shown += 1;
@@ -665,15 +941,15 @@ fn perpsTui(allocator: std.mem.Allocator, config: Config, universe: []const std.
 
     for (0..n) |i| {
         const m = response.PerpMeta.fromJson(universe[i]) orelse continue;
-        const lev_s = std.fmt.bufPrint(&cell_bufs[i].lev, "{d}x", .{m.max_leverage}) catch "?";
+        const lev_s = std.fmt.bufPrint(&cell_bufs[i].lev, "{d}x", .{m.maxLeverage}) catch "?";
         cell_bufs[i].lev_len = lev_s.len;
-        const dec_s = std.fmt.bufPrint(&cell_bufs[i].dec, "{d}", .{m.sz_decimals}) catch "?";
+        const dec_s = std.fmt.bufPrint(&cell_bufs[i].dec, "{d}", .{m.szDecimals}) catch "?";
         cell_bufs[i].dec_len = dec_s.len;
 
         items[i] = .{
             .cells = cellsInit(&.{ m.name, cell_bufs[i].lev[0..cell_bufs[i].lev_len], cell_bufs[i].dec[0..cell_bufs[i].dec_len] }),
             .styles = stylesInit(&.{ cyan, yellow }),
-            .sort_key = @as(f64, @floatFromInt(m.max_leverage)),
+            .sort_key = @as(f64, @floatFromInt(m.maxLeverage)),
         };
     }
 
@@ -811,8 +1087,8 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         const cols = [_]Column{
             .{ .text = t.name, .width = 12, .color = Style.cyan },
             .{ .text = std.fmt.bufPrint(&idx_buf, "{d}", .{t.index}) catch "?", .width = 6, .align_right = true },
-            .{ .text = std.fmt.bufPrint(&sz_buf, "{d}", .{t.sz_decimals}) catch "?", .width = 7, .align_right = true },
-            .{ .text = std.fmt.bufPrint(&wei_buf, "{d}", .{t.wei_decimals}) catch "?", .width = 8, .align_right = true },
+            .{ .text = std.fmt.bufPrint(&sz_buf, "{d}", .{t.szDecimals}) catch "?", .width = 7, .align_right = true },
+            .{ .text = std.fmt.bufPrint(&wei_buf, "{d}", .{t.weiDecimals}) catch "?", .width = 8, .align_right = true },
         };
         try w.tableRow(&cols);
         shown += 1;
@@ -836,9 +1112,9 @@ fn spotTui(allocator: std.mem.Allocator, tokens: []const std.json.Value) !void {
         const t = response.SpotToken.fromJson(tokens[i]) orelse continue;
         const idx_s = std.fmt.bufPrint(&cell_bufs[count].idx, "{d}", .{t.index}) catch "?";
         cell_bufs[count].idx_len = idx_s.len;
-        const sz_s = std.fmt.bufPrint(&cell_bufs[count].sz, "{d}", .{t.sz_decimals}) catch "?";
+        const sz_s = std.fmt.bufPrint(&cell_bufs[count].sz, "{d}", .{t.szDecimals}) catch "?";
         cell_bufs[count].sz_len = sz_s.len;
-        const wei_s = std.fmt.bufPrint(&cell_bufs[count].wei, "{d}", .{t.wei_decimals}) catch "?";
+        const wei_s = std.fmt.bufPrint(&cell_bufs[count].wei, "{d}", .{t.weiDecimals}) catch "?";
         cell_bufs[count].wei_len = wei_s.len;
 
         items[count] = .{
@@ -991,6 +1267,38 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
         .grouping = grouping,
     };
 
+    // --dry-run: preview without sending
+    if (a.dry_run) {
+        if (w.format == .json) {
+            var db: [512]u8 = undefined;
+            var lp_buf: [32]u8 = undefined;
+            var sz_dbuf: [32]u8 = undefined;
+            const lp_s = limit_px.normalize().toString(&lp_buf) catch "?";
+            const sz_s = sz.normalize().toString(&sz_dbuf) catch "?";
+            const dr = std.fmt.bufPrint(&db,
+                \\{{"status":"dry_run","side":"{s}","coin":"{s}","size":"{s}","price":"{s}","reduce_only":{s},"bracket":{d}}}
+            , .{
+                if (is_buy) "buy" else "sell",
+                a.coin,
+                sz_s,
+                lp_s,
+                if (a.reduce_only) "true" else "false",
+                bracket_count - 1,
+            }) catch "{}";
+            try w.jsonRaw(dr);
+        } else {
+            try w.styled(Style.bold_yellow, "⊘ dry-run");
+            try w.print(" {s} {s}", .{ if (is_buy) "buy" else "sell", a.coin });
+            var sz_dbuf: [32]u8 = undefined;
+            var lp_buf: [32]u8 = undefined;
+            try w.print(" {s} @ {s}", .{ sz.normalize().toString(&sz_dbuf) catch "?", limit_px.normalize().toString(&lp_buf) catch "?" });
+            if (a.reduce_only) try w.print(" reduce-only", .{});
+            if (bracket_count > 1) try w.print(" +{d} bracket", .{bracket_count - 1});
+            try w.nl();
+        }
+        return;
+    }
+
     var nonce_handler = response.NonceHandler.init();
     const nonce = nonce_handler.next();
 
@@ -1009,23 +1317,23 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     if (statuses.len > 0) {
         switch (statuses[0]) {
             .resting => |r| {
-                try w.styled(Style.bold_green, "✓ Order resting");
+                try w.styled(Style.bold_green, "\xe2\x9c\x93 resting");
                 var oid_buf: [20]u8 = undefined;
-                try w.print(" (oid: {s})\n", .{std.fmt.bufPrint(&oid_buf, "{d}", .{r.oid}) catch "?"});
+                try w.print(" oid={s}\n", .{std.fmt.bufPrint(&oid_buf, "{d}", .{r.oid}) catch "?"});
             },
             .filled => |f| {
-                try w.styled(Style.bold_green, "✓ Order filled");
+                try w.styled(Style.bold_green, "\xe2\x9c\x93 filled");
                 var avg_buf: [32]u8 = undefined;
-                try w.print(" (avg: {s})\n", .{decStr(f.avg_px, &avg_buf)});
+                try w.print(" avg={s}\n", .{decStr(f.avgPx, &avg_buf)});
             },
-            .success => try w.success("Order accepted"),
-            .@"error" => |msg| try w.errFmt("order rejected: {s}", .{msg}),
+            .success => try w.success("accepted"),
+            .@"error" => |msg| try w.errFmt("rejected: {s}", .{msg}),
             .unknown => try w.err("unknown response"),
         }
     } else {
         const status = response.parseResponseStatus(val);
         switch (status) {
-            .ok => try w.success("Order submitted"),
+            .ok => try w.success("submitted"),
             .err => {
                 const err_msg = json_mod.getString(val, "response") orelse "unknown error";
                 try w.errFmt("rejected: {s}", .{err_msg});
@@ -2351,6 +2659,10 @@ fn decStr(d: ?Decimal, buf: []u8) []const u8 {
     return "-";
 }
 
+fn decFmt(d: Decimal, buf: []u8) []const u8 {
+    return d.normalize().toString(buf) catch "-";
+}
+
 fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
     if (needle.len > haystack.len) return false;
     for (0..haystack.len - needle.len + 1) |i| {
@@ -2536,7 +2848,12 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         return;
     }
 
-    // Pretty output
+    // Quiet: just the mid price
+    if (w.quiet) {
+        if (mid_str) |m| try w.print("{s}\n", .{m});
+        return;
+    }
+
     try w.nl();
     if (mid_str) |m| {
         try w.style(Style.muted);
@@ -3026,7 +3343,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
             switch (statuses[0]) {
                 .filled => |f| {
                     slice_filled = slice_sz;
-                    slice_px = std.fmt.parseFloat(f64, decStr(f.avg_px, &px_buf)) catch best_px;
+                    slice_px = std.fmt.parseFloat(f64, decStr(f.avgPx, &px_buf)) catch best_px;
                 },
                 .resting => {
                     slice_filled = slice_sz;
@@ -3113,10 +3430,56 @@ fn makeCloid() types.Cloid {
 // ── Batch ─────────────────────────────────────────────────
 
 pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.BatchArgs) !void {
-    if (a.count == 0) {
-        try w.err("no orders specified. Usage: hl batch \"buy BTC 0.1 @98000\" \"sell ETH 1.0\"");
+    // --stdin: read order strings from stdin (one per line or JSON array)
+    var stdin_storage: [4096]u8 = undefined;
+    var stdin_len: usize = 0;
+    var effective = a;
+
+    if (a.stdin) {
+        stdin_len = std.fs.File.stdin().readAll(&stdin_storage) catch 0;
+        if (stdin_len > 0) {
+            const input = std.mem.trim(u8, stdin_storage[0..stdin_len], " \t\r\n");
+            if (input.len > 0 and input[0] == '[') {
+                // JSON array — parse, then copy strings into stdin_storage tail
+                const parsed = std.json.parseFromSlice(std.json.Value, allocator, input, .{}) catch {
+                    try w.err("invalid JSON on stdin");
+                    return;
+                };
+                // Copy strings into rest of stdin_storage so they outlive parsed
+                var pos: usize = stdin_len;
+                if (parsed.value == .array) {
+                    for (parsed.value.array.items) |item| {
+                        if (item == .string and effective.count < 16) {
+                            const s = item.string;
+                            if (pos + s.len <= stdin_storage.len) {
+                                @memcpy(stdin_storage[pos..][0..s.len], s);
+                                effective.orders[effective.count] = stdin_storage[pos..][0..s.len];
+                                effective.count += 1;
+                                pos += s.len;
+                            }
+                        }
+                    }
+                }
+                parsed.deinit();
+            } else {
+                // Plain text: one order per line (slices into stdin_storage, stable)
+                var it = std.mem.splitScalar(u8, input, '\n');
+                while (it.next()) |line| {
+                    const trimmed = std.mem.trim(u8, line, " \t\r");
+                    if (trimmed.len > 0 and effective.count < 16) {
+                        effective.orders[effective.count] = trimmed;
+                        effective.count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (effective.count == 0) {
+        try w.err("no orders. Usage: hl batch \"buy BTC 0.1 @98000\" or echo orders | hl batch --stdin");
         return;
     }
+    const ba = effective;
 
     var client = makeClient(allocator, config);
     defer client.deinit();
@@ -3126,8 +3489,8 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
     var batch_items: [16]types.OrderRequest = undefined;
     var order_count: usize = 0;
 
-    for (0..a.count) |i| {
-        const order_str = a.orders[i] orelse continue;
+    for (0..ba.count) |i| {
+        const order_str = ba.orders[i] orelse continue;
         // Tokenize the order string (space-separated)
         var tokens: [8][]const u8 = undefined;
         var token_count: usize = 0;
@@ -3229,7 +3592,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
             },
             .filled => |f| {
                 var ab: [32]u8 = undefined;
-                try w.print("  [{d}] filled @ {s}\n", .{ idx + 1, decStr(f.avg_px, &ab) });
+                try w.print("  [{d}] filled @ {s}\n", .{ idx + 1, decStr(f.avgPx, &ab) });
             },
             .success => try w.print("  [{d}] accepted\n", .{idx + 1}),
             .@"error" => |msg| try w.print("  [{d}] error: {s}\n", .{ idx + 1, msg }),

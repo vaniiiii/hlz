@@ -325,7 +325,7 @@ pub fn signApproveAgent(
     nonce: u64,
 ) signer.SignError!signer.Signature {
     const chain_str: []const u8 = if (is_mainnet) "Mainnet" else "Testnet";
-    const addr = parseAddress(agent_address) orelse return error.IdentityElementError;
+    const addr = parseAddress(agent_address) orelse return error.IdentityElement;
     const struct_hash = hashApproveAgent(chain_str, addr, agent_name, nonce);
     const domain_sep = if (is_mainnet) MAINNET_DOMAIN_SEPARATOR else TESTNET_DOMAIN_SEPARATOR;
     return s.sign(signingHash(domain_sep, struct_hash));

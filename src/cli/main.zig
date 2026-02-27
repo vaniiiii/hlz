@@ -8,7 +8,14 @@ const commands = @import("commands.zig");
 const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
+
+// Exit codes (documented in --help, stable contract)
+const EXIT_OK: u8 = 0;
+const EXIT_ERROR: u8 = 1;
+const EXIT_USAGE: u8 = 2;
+const EXIT_AUTH: u8 = 3;
+const EXIT_NETWORK: u8 = 4;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -22,13 +29,25 @@ pub fn main() !void {
             error.UnknownCommand => try w.err("unknown command. Run `hl help` for usage."),
             error.InvalidFlag => try w.err("invalid flag value. Run `hl help` for usage."),
         }
-        std.process.exit(1);
+        std.process.exit(EXIT_USAGE);
     };
 
     const flags = result.flags;
-    var w = output_mod.Writer.initAuto(flags.output, flags.output_explicit);
+
+    // Apply HL_OUTPUT env var override
+    var effective_output = flags.output;
+    var effective_explicit = flags.output_explicit;
+
     var config = config_mod.load(allocator, flags);
     defer config.deinit();
+
+    if (config.output_override) |ov| {
+        effective_output = ov;
+        effective_explicit = true;
+    }
+
+    var w = output_mod.Writer.initAuto(effective_output, effective_explicit);
+    w.quiet = flags.quiet;
 
     const cmd = result.command orelse {
         try printHelp(&w);
@@ -39,45 +58,80 @@ pub fn main() !void {
         .help => try printHelp(&w),
         .version => try printVersion(&w),
         .config => try commands.showConfig(&w, config),
-        .mids => |a| commands.mids(allocator, &w, config, a) catch |e| return fail(&w, "mids", e),
-        .positions => |a| commands.positions(allocator, &w, config, a) catch |e| return fail(&w, "positions", e),
-        .orders => |a| commands.orders(allocator, &w, config, a) catch |e| return fail(&w, "orders", e),
-        .fills => |a| commands.fills(allocator, &w, config, a) catch |e| return fail(&w, "fills", e),
-        .balance => |a| commands.balance(allocator, &w, config, a) catch |e| return fail(&w, "balance", e),
-        .perps => |a| commands.perps(allocator, &w, config, a) catch |e| return fail(&w, "perps", e),
-        .spot => |a| commands.spotMarkets(allocator, &w, config, a) catch |e| return fail(&w, "spot", e),
-        .dexes => commands.dexes(allocator, &w, config) catch |e| return fail(&w, "dexes", e),
-        .buy => |a| commands.placeOrder(allocator, &w, config, a, true) catch |e| return fail(&w, "buy", e),
-        .sell => |a| commands.placeOrder(allocator, &w, config, a, false) catch |e| return fail(&w, "sell", e),
-        .cancel => |a| commands.cancelOrder(allocator, &w, config, a) catch |e| return fail(&w, "cancel", e),
-        .modify => |a| commands.modifyOrder(allocator, &w, config, a) catch |e| return fail(&w, "modify", e),
-        .send => |a| commands.sendAsset(allocator, &w, config, a) catch |e| return fail(&w, "send", e),
-        .stream => |a| commands.stream(allocator, &w, config, a) catch |e| return fail(&w, "stream", e),
-        .status => |a| commands.orderStatus(allocator, &w, config, a) catch |e| return fail(&w, "status", e),
-        .funding => |a| commands.funding(allocator, &w, config, a) catch |e| return fail(&w, "funding", e),
-        .book => |a| commands.book(allocator, &w, config, a) catch |e| return fail(&w, "book", e),
-        .markets => commands.markets(allocator, config) catch |e| return fail(&w, "markets", e),
-        .leverage => |a| commands.setLeverage(allocator, &w, config, a) catch |e| return fail(&w, "leverage", e),
-        .price => |a| commands.price(allocator, &w, config, a) catch |e| return fail(&w, "price", e),
-        .portfolio => |a| commands.portfolio(allocator, &w, config, a) catch |e| return fail(&w, "portfolio", e),
-        .referral => |a| commands.referralCmd(allocator, &w, config, a) catch |e| return fail(&w, "referral", e),
-        .twap => |a| commands.twap(allocator, &w, config, a) catch |e| return fail(&w, "twap", e),
-        .batch => |a| commands.batchCmd(allocator, &w, config, a) catch |e| return fail(&w, "batch", e),
+        .keys => |a| commands.keys(allocator, &w, a) catch |e| return exit(&w, "keys", e),
+        .approve_agent => |a| commands.approveAgent(allocator, &w, config, a) catch |e| return exit(&w, "approve-agent", e),
+        .mids => |a| commands.mids(allocator, &w, config, a) catch |e| return exit(&w, "mids", e),
+        .positions => |a| commands.positions(allocator, &w, config, a) catch |e| return exit(&w, "positions", e),
+        .orders => |a| commands.orders(allocator, &w, config, a) catch |e| return exit(&w, "orders", e),
+        .fills => |a| commands.fills(allocator, &w, config, a) catch |e| return exit(&w, "fills", e),
+        .balance => |a| commands.balance(allocator, &w, config, a) catch |e| return exit(&w, "balance", e),
+        .perps => |a| commands.perps(allocator, &w, config, a) catch |e| return exit(&w, "perps", e),
+        .spot => |a| commands.spotMarkets(allocator, &w, config, a) catch |e| return exit(&w, "spot", e),
+        .dexes => commands.dexes(allocator, &w, config) catch |e| return exit(&w, "dexes", e),
+        .buy => |a| commands.placeOrder(allocator, &w, config, a, true) catch |e| return exit(&w, "buy", e),
+        .sell => |a| commands.placeOrder(allocator, &w, config, a, false) catch |e| return exit(&w, "sell", e),
+        .cancel => |a| commands.cancelOrder(allocator, &w, config, a) catch |e| return exit(&w, "cancel", e),
+        .modify => |a| commands.modifyOrder(allocator, &w, config, a) catch |e| return exit(&w, "modify", e),
+        .send => |a| commands.sendAsset(allocator, &w, config, a) catch |e| return exit(&w, "send", e),
+        .stream => |a| commands.stream(allocator, &w, config, a) catch |e| return exit(&w, "stream", e),
+        .status => |a| commands.orderStatus(allocator, &w, config, a) catch |e| return exit(&w, "status", e),
+        .funding => |a| commands.funding(allocator, &w, config, a) catch |e| return exit(&w, "funding", e),
+        .book => |a| commands.book(allocator, &w, config, a) catch |e| return exit(&w, "book", e),
+        .markets => commands.markets(allocator, config) catch |e| return exit(&w, "markets", e),
+        .leverage => |a| commands.setLeverage(allocator, &w, config, a) catch |e| return exit(&w, "leverage", e),
+        .price => |a| commands.price(allocator, &w, config, a) catch |e| return exit(&w, "price", e),
+        .portfolio => |a| commands.portfolio(allocator, &w, config, a) catch |e| return exit(&w, "portfolio", e),
+        .referral => |a| commands.referralCmd(allocator, &w, config, a) catch |e| return exit(&w, "referral", e),
+        .twap => |a| commands.twap(allocator, &w, config, a) catch |e| return exit(&w, "twap", e),
+        .batch => |a| commands.batchCmd(allocator, &w, config, a) catch |e| return exit(&w, "batch", e),
         .trade => |a| trade_mod.run(allocator, .{
             .chain = config.chain,
             .key_hex = config.key_hex,
             .address = config.getAddress(),
-        }, a.coin) catch |e| return fail(&w, "trade", e),
+        }, a.coin) catch |e| return exit(&w, "trade", e),
     }
 }
 
-fn fail(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
-    w.errFmt("{s}: {s}", .{ cmd, @errorName(e) }) catch {};
-    std.process.exit(1);
+fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
+    const code: u8 = switch (e) {
+        error.MissingKey, error.MissingAddress => EXIT_AUTH,
+        error.MissingArgument => EXIT_USAGE,
+        error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable => EXIT_NETWORK,
+        else => EXIT_ERROR,
+    };
+
+    if (w.format == .json) {
+        // Structured error envelope on stdout for agent consumption
+        var buf: [512]u8 = undefined;
+        const name = @errorName(e);
+        const retryable = switch (e) {
+            error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable => true,
+            else => false,
+        };
+        const hint = switch (e) {
+            error.MissingKey => "set HL_KEY env var or pass --key",
+            error.MissingAddress => "set HL_ADDRESS env var or pass --address",
+            error.MissingArgument => "run `hl help` for usage",
+            error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
+            else => "",
+        };
+        const s = std.fmt.bufPrint(&buf,
+            \\{{"status":"error","command":"{s}","error":"{s}","retryable":{s},"hint":"{s}"}}
+        , .{ cmd, name, if (retryable) "true" else "false", hint }) catch return;
+        w.jsonRaw(s) catch {};
+    } else {
+        w.errFmt("{s}: {s}", .{ cmd, @errorName(e) }) catch {};
+    }
+
+    std.process.exit(code);
 }
 
 fn printVersion(w: *output_mod.Writer) !void {
-    try w.print("hl {s}\n", .{VERSION});
+    if (w.format == .json) {
+        try w.jsonRaw("{\"version\":\"" ++ VERSION ++ "\"}");
+    } else {
+        try w.print("hl {s}\n", .{VERSION});
+    }
 }
 
 fn printHelp(w: *output_mod.Writer) !void {
@@ -89,68 +143,156 @@ fn printHelp(w: *output_mod.Writer) !void {
         \\
     );
     try w.print("  Hyperliquid CLI v{s}\n\n", .{VERSION});
-    try w.styled(Style.bold, "USAGE\n");
+    try w.styled(Style.bold_white, "USAGE\n");
     try w.print("  hl <command> [args] [flags]\n\n", .{});
 
-    try w.styled(Style.bold, "TRADING TERMINAL\n");
-    try w.print("  hl trade [COIN]             Full trading terminal (TUI)\n\n", .{});
+    try w.styled(Style.bold_white, "MARKET DATA\n");
+    try w.print(
+        \\  price <COIN>             Mid price + bid/ask spread
+        \\  mids [COIN]              All mid prices (--all, --page N)
+        \\  funding [--top N]        Funding rates with heat bars
+        \\  book <COIN> [--live]     L2 order book
+        \\  perps [--dex xyz]        Perpetual markets
+        \\  spot [--all]             Spot markets
+        \\  dexes                    HIP-3 DEXes
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "MARKET DATA\n");
-    try w.print("  hl markets                  Interactive market browser (TUI)\n", .{});
-    try w.print("  hl price <COIN>             Current price (mid + bid/ask)\n", .{});
-    try w.print("  hl mids [COIN]              Mid prices (top 20, --all)\n", .{});
-    try w.print("  hl funding [--top N] [--all] Funding rates with heat bars\n", .{});
-    try w.print("  hl book <COIN> [--live]     Order book depth\n", .{});
-    try w.print("  hl perps [--dex xyz] [--all] Perpetual markets\n", .{});
-    try w.print("  hl spot [--all]             Spot markets\n", .{});
-    try w.print("  hl dexes                    HIP-3 DEXes\n\n", .{});
+    try w.styled(Style.bold_white, "ACCOUNT\n");
+    try w.print(
+        \\  portfolio [ADDR]         Positions + spot balances
+        \\  positions [ADDR]         Open positions
+        \\  orders [ADDR]            Open orders
+        \\  fills [ADDR]             Recent fills
+        \\  balance [ADDR]           Account balance + health
+        \\  status <OID>             Order status by OID
+        \\  referral [set <CODE>]    Referral status or set code
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "STREAMING\n");
-    try w.print("  hl stream trades <COIN>     Real-time trades\n", .{});
-    try w.print("  hl stream bbo <COIN>        Best bid/offer\n", .{});
-    try w.print("  hl stream book <COIN>       L2 orderbook updates\n", .{});
-    try w.print("  hl stream candles <COIN>    OHLCV candles (--interval 1m)\n", .{});
-    try w.print("  hl stream mids              All mid prices\n", .{});
-    try w.print("  hl stream fills <ADDR>      User fills\n", .{});
-    try w.print("  hl stream orders <ADDR>     Order status updates\n\n", .{});
+    try w.styled(Style.bold_white, "TRADING\n");
+    try w.print(
+        \\  buy <COIN> <SZ> [@PX]    Limit or market buy
+        \\  sell <COIN> <SZ> [@PX]   Limit or market sell
+        \\  cancel <COIN> [OID]      Cancel order(s)
+        \\  cancel --all             Cancel all open orders
+        \\  modify <COIN> <OID> <SZ> <PX>
+        \\  leverage <COIN> [N]      Query or set leverage
+        \\  twap <COIN> buy|sell <SZ> --duration 1h --slices 10
+        \\  batch "buy BTC 0.1 @98000" "sell ETH 1.0" [--stdin]
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "ACCOUNT\n");
-    try w.print("  hl portfolio [ADDR]         Full portfolio (positions + spot)\n", .{});
-    try w.print("  hl positions [ADDR]         Open positions\n", .{});
-    try w.print("  hl orders [ADDR]            Open orders\n", .{});
-    try w.print("  hl fills [ADDR]             Recent fills\n", .{});
-    try w.print("  hl balance [ADDR]           Spot + perp balances\n", .{});
-    try w.print("  hl status <OID>             Order status\n", .{});
-    try w.print("  hl referral [set <CODE>]    Referral status or set code\n\n", .{});
+    try w.styled(Style.bold_white, "TRADING FLAGS\n");
+    try w.print(
+        \\  --reduce-only            Reduce-only order
+        \\  --tp <PX>                Take-profit (bracket)
+        \\  --sl <PX>                Stop-loss (bracket)
+        \\  --trigger-above <PX>     Trigger order (take-profit)
+        \\  --trigger-below <PX>     Trigger order (stop-loss)
+        \\  --slippage <PX>          Max slippage for market orders
+        \\  --tif <gtc|ioc|alo>      Time-in-force
+        \\  --dry-run, -n            Preview order without sending
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "TRADING\n");
-    try w.print("  hl buy <COIN> <SZ> [@PX]    Limit buy (@PX) or market\n", .{});
-    try w.print("  hl sell <COIN> <SZ> [@PX]   Limit sell (@PX) or market\n", .{});
-    try w.print("  hl long/short               Aliases for buy/sell\n", .{});
-    try w.print("  hl buy BTC 1.0 @98000 --tp 105000 --sl 95000  Bracket\n", .{});
-    try w.print("  hl buy BTC 1.0 --trigger-above 100000  Trigger order\n", .{});
-    try w.print("  hl modify <COIN> <OID> <SZ> <PX>  Modify existing order\n", .{});
-    try w.print("  hl cancel <COIN> [OID]      Cancel by OID or all for coin\n", .{});
-    try w.print("  hl cancel --all             Cancel all orders\n", .{});
-    try w.print("  hl leverage <COIN> [N]      Query or set leverage\n", .{});
-    try w.print("  hl twap <COIN> buy|sell <SZ> --duration 1h --slices 10\n", .{});
-    try w.print("  hl batch \"buy BTC 0.1 @98000\" \"sell ETH 1.0\"\n\n", .{});
+    try w.styled(Style.bold_white, "TRANSFERS\n");
+    try w.print(
+        \\  send <AMT> [TOKEN] <DEST>      Send to address
+        \\  send <AMT> USDC --to spot      Perp → spot transfer
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "TRANSFERS\n");
-    try w.print("  hl send <AMT> [TOKEN] <DEST>      Send to address\n", .{});
-    try w.print("  hl send <AMT> USDC --to spot      Perp → spot (self)\n", .{});
-    try w.print("  hl send <AMT> USDC --from spot --to xyz  Spot → DEX\n", .{});
-    try w.print("  hl send <AMT> HYPE --subaccount alice --to <DEST>\n\n", .{});
+    try w.styled(Style.bold_white, "STREAMING\n");
+    try w.print(
+        \\  stream trades|bbo|book|candles|mids|fills|orders <COIN|ADDR>
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.bold, "FLAGS\n");
-    try w.print("  --chain <mainnet|testnet>   Target chain\n", .{});
-    try w.print("  --output <pretty|json|csv>  Output format\n", .{});
-    try w.print("  --json                      Shorthand for --output json\n", .{});
-    try w.print("  --key <HEX>                 Private key\n", .{});
-    try w.print("  --address <ADDR>            User address\n\n", .{});
+    try w.styled(Style.bold_white, "AGENT\n");
+    try w.print(
+        \\  approve-agent <ADDR>     Approve API wallet for your account
+        \\
+        \\
+    , .{});
 
-    try w.styled(Style.dim, "  Config: .env, ~/.hl/config, or env vars (HL_KEY, HL_ADDRESS)\n");
-    try w.styled(Style.dim, "  Pipe-aware: auto-outputs JSON when stdout is not a TTY\n");
-    try w.styled(Style.dim, "  Asset formats: BTC (perp), PURR/USDC (spot), xyz:BTC (HIP-3)\n");
-    try w.styled(Style.dim, "  Aliases: long=buy, short=sell, pos=positions, bal=balance\n\n");
+    try w.styled(Style.bold_white, "KEYS\n");
+    try w.print(
+        \\  keys ls                  List stored keys
+        \\  keys new <NAME>          Generate new key (encrypted)
+        \\  keys import <NAME>       Import existing key (--private-key)
+        \\  keys export <NAME>       Export key (decrypted hex)
+        \\  keys default <NAME>      Set default key
+        \\  keys rm <NAME>           Remove key
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.bold_white, "TUI\n");
+    try w.print(
+        \\  trade [COIN]             Trading terminal (candlestick, orderbook)
+        \\  markets                  Interactive market browser
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.bold_white, "GLOBAL FLAGS\n");
+    try w.print(
+        \\  --output json|pretty|csv Output format (auto-json when piped)
+        \\  --json                   Shorthand for --output json
+        \\  --quiet, -q              Minimal output (just result value)
+        \\  --chain mainnet|testnet  Target chain
+        \\  --key <HEX>             Private key (prefer keystore)
+        \\  --key-name <NAME>       Use named keystore key
+        \\  --address <ADDR>        User address
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.bold_white, "ENVIRONMENT\n");
+    try w.print(
+        \\  HL_KEY                   Trading private key (raw hex)
+        \\  HL_PASSWORD              Keystore password (for --key-name)
+        \\  HL_ADDRESS               Default wallet address
+        \\  HL_CHAIN                 Default chain (mainnet|testnet)
+        \\  HL_OUTPUT                Default output format (json|pretty|csv)
+        \\  NO_COLOR                 Disable colored output
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.bold_white, "EXIT CODES\n");
+    try w.print(
+        \\  0   Success
+        \\  1   Error (check stderr or JSON error envelope)
+        \\  2   Usage error (bad arguments, unknown command)
+        \\  3   Auth error (missing key or address)
+        \\  4   Network error (connection failed, retryable)
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.bold_white, "EXAMPLES\n");
+    try w.print(
+        \\  hl price BTC                           Current BTC price
+        \\  hl positions --json                     Positions as JSON
+        \\  hl buy BTC 0.1 @95000 --dry-run         Preview order
+        \\  hl buy ETH 1.0 @3400 --tp 3600 --sl 3200  Bracket order
+        \\  hl cancel ETH                           Cancel all ETH orders
+        \\  hl stream trades BTC                    Real-time BTC trades
+        \\  hl mids --json | jq .BTC                Pipe mid price
+        \\  HL_OUTPUT=json hl positions              Agent-friendly default
+        \\  echo '["buy BTC 0.1 @95000"]' | hl batch --stdin  Pipe orders
+        \\
+        \\
+    , .{});
+
+    try w.styled(Style.muted, "  Asset syntax: BTC (perp) · PURR/USDC (spot) · xyz:BTC (HIP-3 DEX)\n");
+    try w.styled(Style.muted, "  Aliases: long=buy short=sell pos=positions bal=balance ord=orders\n\n");
 }

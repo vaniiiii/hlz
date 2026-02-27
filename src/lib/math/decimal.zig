@@ -64,6 +64,38 @@ pub const Decimal = struct {
         return .{ .mantissa = mantissa, .scale = scale };
     }
 
+    /// Hook for std.json.parseFromSlice (streaming token parser).
+    pub fn jsonParse(
+        _: std.mem.Allocator,
+        source: anytype,
+        options: std.json.ParseOptions,
+    ) std.json.ParseError(@TypeOf(source.*))!Decimal {
+        const token = try source.nextAllocMax(
+            std.heap.page_allocator,
+            .alloc_if_needed,
+            options.max_value_len orelse 256,
+        );
+        const slice = switch (token) {
+            .number, .allocated_number, .string, .allocated_string => |s| s,
+            else => return error.UnexpectedToken,
+        };
+        return Decimal.fromString(slice) catch return error.Overflow;
+    }
+
+    /// Hook for std.json.parseFromValue (pre-parsed Value tree).
+    pub fn jsonParseFromValue(
+        _: std.mem.Allocator,
+        source: std.json.Value,
+        _: std.json.ParseOptions,
+    ) std.json.ParseFromValueError!Decimal {
+        const s = switch (source) {
+            .string => |v| v,
+            .number_string => |v| v,
+            else => return error.UnexpectedToken,
+        };
+        return Decimal.fromString(s) catch return error.InvalidNumber;
+    }
+
     /// Format decimal to string in caller-provided buffer.
     /// Returns the written slice.
     pub fn toString(self: Decimal, buf: []u8) ![]const u8 {

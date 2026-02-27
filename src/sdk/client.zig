@@ -4,6 +4,7 @@ const std = @import("std");
 const json_mod = @import("json.zig");
 const signing = @import("signing.zig");
 const types = @import("types.zig");
+const resp_types = @import("response.zig");
 const signer_mod = @import("../lib/crypto/signer.zig");
 const eip712 = @import("../lib/crypto/eip712.zig");
 const Decimal = @import("../lib/math/decimal.zig").Decimal;
@@ -120,6 +121,20 @@ pub const Client = struct {
     }
 
     /// Fetch historical orders.
+    /// Fetch user funding payments.
+    pub fn userFunding(self: *Client, user: []const u8, start_time: u64, end_time: ?u64) !InfoResult {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFunding","user":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ user, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFunding","user":"{s}","startTime":{d}}}
+            , .{ user, start_time }) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
     pub fn historicalOrders(self: *Client, user: []const u8) !InfoResult {
         var buf: [256]u8 = undefined;
         const body = try formatInfoBodySimple(&buf, "historicalOrders", user);
@@ -543,6 +558,134 @@ pub const Client = struct {
         return self.exchangeRequestDyn(body);
     }
 
+    // ── Typed Info Endpoints ──────────────────────────────────────
+    // Return parsed structs instead of raw JSON. Caller must deinit().
+    // Use the untyped versions above for JSON passthrough (--json flag).
+
+    const R = resp_types;
+    const Parsed = std.json.Parsed;
+
+    pub fn getClearinghouseState(self: *Client, user: []const u8, dex_name: ?[]const u8) !Parsed(R.ClearinghouseState) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBody(&buf, "clearinghouseState", user, dex_name);
+        return self.infoTyped(R.ClearinghouseState, body);
+    }
+
+    pub fn getSpotBalances(self: *Client, user: []const u8) !Parsed(R.SpotClearinghouseState) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "spotClearinghouseState", user);
+        return self.infoTyped(R.SpotClearinghouseState, body);
+    }
+
+    pub fn getOpenOrders(self: *Client, user: []const u8, dex_name: ?[]const u8) !Parsed([]R.BasicOrder) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBody(&buf, "frontendOpenOrders", user, dex_name);
+        return self.infoTyped([]R.BasicOrder, body);
+    }
+
+    pub fn getUserFills(self: *Client, user: []const u8) !Parsed([]R.Fill) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userFills", user);
+        return self.infoTyped([]R.Fill, body);
+    }
+
+    pub fn getHistoricalOrders(self: *Client, user: []const u8) !Parsed([]R.HistoricalOrder) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "historicalOrders", user);
+        return self.infoTyped([]R.HistoricalOrder, body);
+    }
+
+    pub fn getUserFunding(self: *Client, user: []const u8, start_time: u64, end_time: ?u64) !Parsed([]R.UserFunding) {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFunding","user":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ user, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFunding","user":"{s}","startTime":{d}}}
+            , .{ user, start_time }) catch return error.BufferOverflow;
+        return self.infoTyped([]R.UserFunding, body);
+    }
+
+    pub fn getFundingHistory(self: *Client, coin: []const u8, start_time: u64, end_time: ?u64) !Parsed([]R.FundingRate) {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"fundingHistory","coin":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ coin, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"fundingHistory","coin":"{s}","startTime":{d}}}
+            , .{ coin, start_time }) catch return error.BufferOverflow;
+        return self.infoTyped([]R.FundingRate, body);
+    }
+
+    pub fn getCandleSnapshot(self: *Client, coin: []const u8, interval: []const u8, start_time: u64, end_time: u64) !Parsed([]R.Candle) {
+        var buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"candleSnapshot","req":{{"coin":"{s}","interval":"{s}","startTime":{d},"endTime":{d}}}}}
+        , .{ coin, interval, start_time, end_time }) catch return error.BufferOverflow;
+        return self.infoTyped([]R.Candle, body);
+    }
+
+    pub fn getUserRole(self: *Client, user: []const u8) !Parsed(R.UserRole) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userRole", user);
+        return self.infoTyped(R.UserRole, body);
+    }
+
+    pub fn getApiAgents(self: *Client, user: []const u8) !Parsed([]R.ApiAgent) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "extraAgents", user);
+        return self.infoTyped([]R.ApiAgent, body);
+    }
+
+    pub fn getSubaccounts(self: *Client, user: []const u8) !Parsed([]R.SubAccount) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "subAccounts", user);
+        return self.infoTyped([]R.SubAccount, body);
+    }
+
+    pub fn getPerpDexs(self: *Client) !Parsed([]R.Dex) {
+        return self.infoTyped([]R.Dex,
+            \\{"type":"perpDexs"}
+        );
+    }
+
+    pub fn getPerps(self: *Client, dex_name: ?[]const u8) !Parsed(R.PerpUniverse) {
+        if (dex_name) |d| {
+            var buf: [256]u8 = undefined;
+            const body = std.fmt.bufPrint(&buf,
+                \\{{"type":"meta","dex":"{s}"}}
+            , .{d}) catch return error.BufferOverflow;
+            return self.infoTyped(R.PerpUniverse, body);
+        }
+        return self.infoTyped(R.PerpUniverse,
+            \\{"type":"meta"}
+        );
+    }
+
+    pub fn getSpotMeta(self: *Client) !Parsed(R.SpotMeta) {
+        return self.infoTyped(R.SpotMeta,
+            \\{"type":"spotMeta"}
+        );
+    }
+
+    pub fn getRecentTrades(self: *Client, coin: []const u8) !Parsed([]R.Trade) {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, "{{\"type\":\"recentTrades\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;
+        return self.infoTyped([]R.Trade, body);
+    }
+
+    pub fn getActiveAssetData(self: *Client, user: []const u8, coin: []const u8) !Parsed(R.ActiveAssetData) {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"activeAssetData","user":"{s}","coin":"{s}"}}
+        , .{ user, coin }) catch return error.BufferOverflow;
+        return self.infoTyped(R.ActiveAssetData, body);
+    }
+
     // ── Internal HTTP helpers ─────────────────────────────────────
 
     pub const InfoResult = struct {
@@ -593,11 +736,23 @@ pub const Client = struct {
             return std.mem.eql(u8, status_str, "ok");
         }
 
+
+
         pub fn deinit(self: *ExchangeResult) void {
             if (self.parsed) |*p| p.deinit();
             self.allocator.free(self.body);
         }
     };
+
+    /// Typed info request: HTTP POST → parse JSON → typed struct.
+    /// Uses std.json.parseFromSlice with ignore_unknown_fields.
+    fn infoTyped(self: *Client, comptime T: type, body: []const u8) !std.json.Parsed(T) {
+        var raw = try self.infoRequestDyn(body);
+        defer raw.deinit();
+        // Parse directly from raw body bytes — no intermediate Value tree
+        return std.json.parseFromSlice(T, self.allocator, raw.body, resp_types.ParseOpts) catch
+            return error.JsonParseFailed;
+    }
 
     fn infoRequest(self: *Client, body: []const u8) !InfoResult {
         return self.infoRequestDyn(body);
