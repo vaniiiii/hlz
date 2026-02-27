@@ -2806,18 +2806,72 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    // Spot pairs: use tokenDetails for oracle-adjusted USD price
-    const is_spot = std.mem.indexOf(u8, a.coin, "/") != null;
-    var spot_mid: ?[]const u8 = null;
-    var spot_mark: ?[]const u8 = null;
-    var token_details: ?std.json.Parsed(response.TokenDetails) = null;
-    defer if (token_details) |*td| td.deinit();
+    // --- Parse coin input ---
+    // "xyz:BTC" → dex=xyz, base=BTC
+    // "HYPE/USDC" → base=HYPE, quote_filter=USDC (explicit spot)
+    // "BTC" → base=BTC (resolve perp first, then spot)
+    var base: []const u8 = a.coin;
+    var dex: ?[]const u8 = a.dex;
+    var quote_filter: ?[]const u8 = a.quote;
+    var explicit_spot = false;
 
-    if (is_spot) {
-        // Extract base token name (before "/")
-        const slash = std.mem.indexOf(u8, a.coin, "/") orelse 0;
-        const base_name = a.coin[0..slash];
-        // Look up tokenId from spotMeta, then fetch tokenDetails for USD price
+    if (std.mem.indexOf(u8, a.coin, ":")) |colon| {
+        dex = a.coin[0..colon];
+        base = a.coin[colon + 1 ..];
+    } else if (std.mem.indexOf(u8, a.coin, "/")) |slash| {
+        base = a.coin[0..slash];
+        quote_filter = a.coin[slash + 1 ..];
+        explicit_spot = true;
+    }
+
+    // --- Collect price sources ---
+    const MAX_RESULTS = 16;
+    var results: [MAX_RESULTS]PriceResult = undefined;
+    var n_results: usize = 0;
+
+    // 1. Perp on specified/default dex (skip if explicit spot or --quote)
+    var perp_coin_buf: [64]u8 = undefined;
+    var perp_mid_buf: [32]u8 = undefined;
+    var perp_mids: ?client_mod.Client.InfoResult = null;
+    defer if (perp_mids) |*m| m.deinit();
+    if (!explicit_spot and quote_filter == null) {
+        const perp_coin = if (dex) |d|
+            (std.fmt.bufPrint(&perp_coin_buf, "{s}:{s}", .{ d, base }) catch base)
+        else
+            base;
+        perp_mids = client.allMids(dex) catch null;
+        if (perp_mids) |*m| {
+            const val = m.json() catch null;
+            if (val) |v| {
+                if (json_mod.getString(v, perp_coin)) |mid_s| {
+                    if (n_results < MAX_RESULTS) {
+                        const len = @min(mid_s.len, 31);
+                        @memcpy(perp_mid_buf[0..len], mid_s[0..len]);
+                        results[n_results] = .{
+                            .market = perp_coin,
+                            .kind = "perp",
+                            .venue = dex orelse "hl",
+                            .mid = perp_mid_buf[0..len],
+                        };
+                        n_results += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Spot pairs — find all pairs with this base token
+    const MAX_PAIRS = 8;
+    var pair_names: [MAX_PAIRS][48]u8 = undefined;
+    var pair_quotes: [MAX_PAIRS][16]u8 = undefined;
+    var n_pairs: usize = 0;
+    var spot_price_buf: [32]u8 = undefined;
+    var spot_price_len: usize = 0;
+    var token_details: ?std.json.Parsed(response.TokenDetails) = null;
+    defer if (token_details) |*t| t.deinit();
+
+    const want_spot = a.all or explicit_spot or quote_filter != null or n_results == 0;
+    if (want_spot) {
         var token_id_buf: [36]u8 = undefined;
         var token_id_len: usize = 0;
         {
@@ -2825,124 +2879,123 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
             defer if (spot_meta) |*sm| sm.deinit();
             if (spot_meta) |sm| {
                 for (sm.value.tokens) |tok| {
-                    if (std.ascii.eqlIgnoreCase(tok.name, base_name) and tok.tokenId.len > 0 and tok.tokenId.len <= 36) {
+                    if (std.ascii.eqlIgnoreCase(tok.name, base) and tok.tokenId.len > 0 and tok.tokenId.len <= 36) {
                         @memcpy(token_id_buf[0..tok.tokenId.len], tok.tokenId);
                         token_id_len = tok.tokenId.len;
                         break;
                     }
                 }
+                for (sm.value.universe) |pair| {
+                    if (pair.tokens[0] >= sm.value.tokens.len or pair.tokens[1] >= sm.value.tokens.len) continue;
+                    const pair_base = sm.value.tokens[pair.tokens[0]].name;
+                    const pair_quote = sm.value.tokens[pair.tokens[1]].name;
+                    if (!std.ascii.eqlIgnoreCase(pair_base, base)) continue;
+                    if (quote_filter) |qf| {
+                        if (!std.ascii.eqlIgnoreCase(pair_quote, qf)) continue;
+                    }
+                    if (n_pairs >= MAX_PAIRS) break;
+                    const total = pair_base.len + 1 + pair_quote.len;
+                    if (total >= 48) continue;
+                    @memcpy(pair_names[n_pairs][0..pair_base.len], pair_base);
+                    pair_names[n_pairs][pair_base.len] = '/';
+                    @memcpy(pair_names[n_pairs][pair_base.len + 1 .. total], pair_quote);
+                    pair_names[n_pairs][total] = 0;
+                    const ql = @min(pair_quote.len, 15);
+                    @memcpy(pair_quotes[n_pairs][0..ql], pair_quote[0..ql]);
+                    pair_quotes[n_pairs][ql] = 0;
+                    n_pairs += 1;
+                }
             }
         }
-        if (token_id_len > 0) {
+        if (token_id_len > 0 and n_pairs > 0) {
             token_details = client.getTokenDetails(token_id_buf[0..token_id_len]) catch null;
-            if (token_details) |td| {
-                spot_mid = td.value.midPx;
-                spot_mark = td.value.markPx;
+            const price_str = if (token_details) |t| (t.value.markPx orelse t.value.midPx) else null;
+            if (price_str) |ps| {
+                const len = @min(ps.len, 31);
+                @memcpy(spot_price_buf[0..len], ps[0..len]);
+                spot_price_len = len;
+            }
+            if (spot_price_len > 0) {
+                for (0..n_pairs) |pi| {
+                    if (n_results >= MAX_RESULTS) break;
+                    results[n_results] = .{
+                        .market = std.mem.sliceTo(&pair_names[pi], 0),
+                        .kind = "spot",
+                        .venue = std.mem.sliceTo(&pair_quotes[pi], 0),
+                        .mid = spot_price_buf[0..spot_price_len],
+                    };
+                    n_results += 1;
+                }
             }
         }
     }
 
-    // Grab mid price from allMids (raw book midpoint)
-    var mids_result = try client.allMids(null);
-    defer mids_result.deinit();
-    const mids_val = try mids_result.json();
-    const raw_mid = json_mod.getString(mids_val, a.coin);
-
-    // For spot: prefer oracle markPx, fall back to tokenDetails midPx, then raw allMids
-    const mid_str = if (is_spot) (spot_mark orelse spot_mid orelse raw_mid) else raw_mid;
-
-    // Grab book for bid/ask
-    var book_typed = client.getL2Book(a.coin) catch null;
-    defer if (book_typed) |*bt| bt.deinit();
-    const bl: ?[2][]response.BookLevel = if (book_typed) |bt| bt.value.levels else null;
-
-    const has_book = if (bl) |levels| levels[0].len > 0 or levels[1].len > 0 else false;
-    if (mid_str == null and !has_book and spot_mark == null and spot_mid == null) {
+    if (n_results == 0) {
         try w.err("no market data for this coin");
         return error.CommandFailed;
     }
 
+    // --- JSON output ---
     if (w.format == .json) {
-        var jbuf: [256]u8 = undefined;
-        var jlen: usize = 0;
-        const jsl = jbuf[0..];
-        jlen += (std.fmt.bufPrint(jsl[jlen..], "{{\"coin\":\"{s}\"", .{a.coin}) catch return error.CommandFailed).len;
-        if (mid_str) |m_s| jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"mid\":{s}", .{m_s}) catch return error.CommandFailed).len;
-        if (bl) |levels| {
-            if (levels[0].len > 0) { var bb: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}) catch return error.CommandFailed).len; }
-            if (levels[1].len > 0) { var ab: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}) catch return error.CommandFailed).len; }
-        }
-        jlen += (std.fmt.bufPrint(jsl[jlen..], "}}", .{}) catch return error.CommandFailed).len;
-        try w.jsonRaw(jbuf[0..jlen]);
-        return;
-    }
-
-    if (w.quiet) {
-        if (mid_str) |m_s| {
-            try w.print("{s}\n", .{m_s});
-        } else if (bl) |levels| {
-            // No mid but have book — show best bid or ask
-            if (levels[0].len > 0) { var bb: [32]u8 = undefined; try w.print("{s}\n", .{decFmt(levels[0][0].px, &bb)}); }
-            else if (levels[1].len > 0) { var ab: [32]u8 = undefined; try w.print("{s}\n", .{decFmt(levels[1][0].px, &ab)}); }
-        }
-        return;
-    }
-
-    try w.nl();
-    {
-        try w.style(Style.muted);
-        try w.print("  {s: <6}", .{a.coin});
-        try w.style(Style.reset);
-        if (mid_str) |m_s| {
-            try w.styled(Style.bold_white, m_s);
+        if (a.all and n_results > 1) {
+            var jbuf: [2048]u8 = undefined;
+            var jlen: usize = 0;
+            jbuf[0] = '[';
+            jlen = 1;
+            for (results[0..n_results], 0..) |r, i| {
+                if (i > 0) { jbuf[jlen] = ','; jlen += 1; }
+                jlen += (std.fmt.bufPrint(jbuf[jlen..],
+                    "{{\"market\":\"{s}\",\"type\":\"{s}\",\"venue\":\"{s}\",\"price\":{s}}}",
+                    .{ r.market, r.kind, r.venue, r.mid },
+                ) catch return error.CommandFailed).len;
+            }
+            jbuf[jlen] = ']';
+            jlen += 1;
+            try w.jsonRaw(jbuf[0..jlen]);
         } else {
-            try w.styled(Style.dim, "(no mid)");
+            const r = results[0];
+            var jbuf: [256]u8 = undefined;
+            const jlen = (std.fmt.bufPrint(&jbuf,
+                "{{\"coin\":\"{s}\",\"mid\":{s}}}",
+                .{ r.market, r.mid },
+            ) catch return error.CommandFailed).len;
+            try w.jsonRaw(jbuf[0..jlen]);
         }
-        try w.nl();
+        return;
     }
 
-    if (bl) |levels| {
-        var bid_px_buf: [32]u8 = undefined;
-        var bid_sz_buf: [32]u8 = undefined;
-        var ask_px_buf: [32]u8 = undefined;
-        var ask_sz_buf: [32]u8 = undefined;
-        const has_bid = levels[0].len > 0;
-        const has_ask = levels[1].len > 0;
-        const bid_px: []const u8 = if (has_bid) decFmt(levels[0][0].px, &bid_px_buf) else "-";
-        const bid_sz: []const u8 = if (has_bid) decFmt(levels[0][0].sz, &bid_sz_buf) else "-";
-        const ask_px: []const u8 = if (has_ask) decFmt(levels[1][0].px, &ask_px_buf) else "-";
-        const ask_sz: []const u8 = if (has_ask) decFmt(levels[1][0].sz, &ask_sz_buf) else "-";
+    // --- Quiet output ---
+    if (w.quiet) {
+        try w.print("{s}\n", .{results[0].mid});
+        return;
+    }
 
+    // --- TTY output ---
+    try w.nl();
+    for (results[0..n_results]) |r| {
         try w.style(Style.muted);
-        try w.print("  bid   ", .{});
-        try w.styled(Style.bold_green, bid_px);
-        try w.style(Style.muted);
-        try w.print("  {s: >10}", .{bid_sz});
+        try w.print("  {s: <18}", .{r.market});
         try w.style(Style.reset);
-
-        const bid_f = if (has_bid) decToF64(levels[0][0].px) else 0;
-        const ask_f = if (has_ask) decToF64(levels[1][0].px) else 0;
-        if (bid_f > 0 and ask_f > 0) {
-            const spread = ask_f - bid_f;
-            const spread_bps = spread / bid_f * 10000.0;
-            var sp_buf: [16]u8 = undefined;
-            const sp_str = std.fmt.bufPrint(&sp_buf, "  {d:.1}bps", .{spread_bps}) catch "";
-            try w.style(Style.muted);
-            try w.print("{s}", .{sp_str});
-            try w.style(Style.reset);
-        }
-        try w.nl();
-
+        try w.styled(Style.bold_white, r.mid);
         try w.style(Style.muted);
-        try w.print("  ask   ", .{});
-        try w.styled(Style.bold_red, ask_px);
-        try w.style(Style.muted);
-        try w.print("  {s: >10}", .{ask_sz});
+        try w.print("  {s}", .{r.kind});
         try w.style(Style.reset);
-        try w.nl();
         try w.nl();
     }
+    if (!a.all and n_results == 1 and !explicit_spot and quote_filter == null) {
+        try w.style(Style.dim);
+        try w.print("  (use --all to see spot pairs and other venues)\n", .{});
+        try w.style(Style.reset);
+    }
+    try w.nl();
 }
+
+const PriceResult = struct {
+    market: []const u8,
+    kind: []const u8,
+    venue: []const u8,
+    mid: []const u8,
+};
 
 // ── Leverage ──────────────────────────────────────────────────
 

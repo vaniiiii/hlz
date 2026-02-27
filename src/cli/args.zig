@@ -142,6 +142,9 @@ pub const LeverageArgs = struct {
 
 pub const PriceArgs = struct {
     coin: []const u8,
+    dex: ?[]const u8 = null,
+    quote: ?[]const u8 = null,
+    all: bool = false,
 };
 
 pub const ReferralArgs = struct {
@@ -299,7 +302,7 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
     else if (std.mem.eql(u8, cmd_str, "leverage") or std.mem.eql(u8, cmd_str, "lev"))
         .{ .leverage = parseLeverage(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "price"))
-        .{ .price = if (rest.len > 0) .{ .coin = rest[0] } else return error.MissingArgument }
+        .{ .price = parsePrice(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "portfolio") or std.mem.eql(u8, cmd_str, "folio"))
         .{ .portfolio = parseUserQuery(rest) }
     else if (std.mem.eql(u8, cmd_str, "referral"))
@@ -473,6 +476,24 @@ fn parseFunding(args: []const []const u8) FundingArgs {
             result.filter = args[i];
         } else if (!std.mem.startsWith(u8, args[i], "--")) {
             result.filter = args[i]; // positional = filter
+        }
+    }
+    return result;
+}
+
+fn parsePrice(args: []const []const u8) ?PriceArgs {
+    if (args.len < 1) return null;
+    var result = PriceArgs{ .coin = args[0] };
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--dex") and i + 1 < args.len) {
+            i += 1;
+            result.dex = args[i];
+        } else if (std.mem.eql(u8, args[i], "--quote") and i + 1 < args.len) {
+            i += 1;
+            result.quote = args[i];
+        } else if (std.mem.eql(u8, args[i], "--all")) {
+            result.all = true;
         }
     }
     return result;
