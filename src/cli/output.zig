@@ -267,13 +267,11 @@ pub const Writer = struct {
         }
     }
 
-    /// Write raw string to stdout (no envelope). Used for pre-built error envelopes.
     pub fn rawJson(self: *Writer, data: []const u8) !void {
         try self.out(data);
         try self.out("\n");
     }
 
-    /// Emit a formatted JSON object wrapped in the envelope.
     pub fn jsonFmt(self: *Writer, comptime fmt: []const u8, fmtargs: anytype) !void {
         var buf: [4096]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, fmt, fmtargs) catch return;

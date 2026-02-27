@@ -55,38 +55,9 @@ pub fn main() !void {
         return;
     };
 
-    // Set command context for JSON envelope
     const cmd_name: []const u8 = switch (cmd) {
-        .help => "help",
-        .version => "version",
-        .config => "config",
-        .keys => "keys",
         .approve_agent => "approve-agent",
-        .mids => "mids",
-        .positions => "positions",
-        .orders => "orders",
-        .fills => "fills",
-        .balance => "balance",
-        .perps => "perps",
-        .spot => "spot",
-        .dexes => "dexes",
-        .buy => "buy",
-        .sell => "sell",
-        .cancel => "cancel",
-        .modify => "modify",
-        .send => "send",
-        .stream => "stream",
-        .status => "status",
-        .funding => "funding",
-        .book => "book",
-        .markets => "markets",
-        .leverage => "leverage",
-        .price => "price",
-        .portfolio => "portfolio",
-        .referral => "referral",
-        .twap => "twap",
-        .batch => "batch",
-        .trade => "trade",
+        else => @tagName(cmd),
     };
     if (w.format == .json) {
         w.cmd = cmd_name;

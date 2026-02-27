@@ -292,11 +292,14 @@ Run through after every change before committing:
 
 | Metric | Value |
 |--------|-------|
-| `hl` (CLI, stripped) | **583KB** |
-| `hl-trade` (terminal, stripped) | **665KB** |
-| Total source | **~12,400 lines** |
+| `hl` (ReleaseSmall, stripped) | **636KB** |
+| `hl-trade` (ReleaseSmall, stripped) | **768KB** |
+| SDK only (no HTTP/TLS) | **116KB** |
+| Total source | **~14,645 lines** |
 | External dependencies | **1** (websocket.zig) |
-| Commands | **34** |
+| Commands | **38** |
+| Typed client methods | **21** |
+| Response types | **62** |
 | sign_order | **34.5µs** |
 | eip712_struct_hash | **250ns** |
 | UI frame rate | **250fps** |
