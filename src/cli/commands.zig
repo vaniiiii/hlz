@@ -2914,8 +2914,7 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         try w.nl();
     }
 
-    // Main positions
-    printPositions(w, state.assetPositions, null) catch {};
+    try printPositions(w, state.assetPositions, null);
 
     // HIP-3 DEX positions (--all-dexes)
     if (a.all_dexes) {
@@ -2925,7 +2924,7 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
             for (dt.value) |dex| {
                 var dex_state = client.getClearinghouseState(addr, dex.name) catch continue;
                 defer dex_state.deinit();
-                printPositions(w, dex_state.value.assetPositions, dex.name) catch {};
+                try printPositions(w, dex_state.value.assetPositions, dex.name);
             }
         }
     }
