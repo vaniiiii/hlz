@@ -1189,11 +1189,10 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
         break :blk .{ .limit = .{ .tif = tif } };
     } else .{ .limit = .{ .tif = .FrontendMarket } };
 
-    // For market orders, resolve spot pair name for book lookup
-    var book_coin_upper: [16]u8 = undefined;
-    var book_spot_buf: [16]u8 = undefined;
-    const book_coin = if (std.mem.indexOf(u8, a.coin, "/") != null)
-        resolveSpotCoin(allocator, config, upperCoin(a.coin, &book_coin_upper), &book_spot_buf)
+    // For spot orders, derive @index from resolved asset for book lookup
+    var book_idx_buf: [16]u8 = undefined;
+    const book_coin = if (asset >= 10000)
+        (std.fmt.bufPrint(&book_idx_buf, "@{d}", .{asset - 10000}) catch a.coin)
     else
         a.coin;
 
@@ -1953,14 +1952,14 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     defer client.deinit();
 
     var coin_upper: [16]u8 = undefined;
+    var display_upper: [16]u8 = undefined;
     var spot_idx_buf: [16]u8 = undefined;
-    const coin = if (std.mem.indexOf(u8, a.coin, "/") != null)
-        resolveSpotCoin(allocator, config, upperCoin(a.coin, &coin_upper), &spot_idx_buf)
+    const is_spot = std.mem.indexOf(u8, a.coin, "/") != null;
+    const display_coin = upperCoin(a.coin, &display_upper);
+    const coin = if (is_spot)
+        resolveSpotCoin(allocator, config, display_coin, &spot_idx_buf)
     else
         upperCoin(a.coin, &coin_upper);
-
-    // Normalize: replace @index with pair name in JSON output
-    const display_coin = upperCoin(a.coin, &coin_upper);
 
     if (w.format == .json) {
         var raw = try client.l2Book(coin);
@@ -1969,18 +1968,20 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
             try w.err("no book data for this coin");
             return error.CommandFailed;
         }
-        // Replace @index coin field with user-facing pair name
-        if (std.mem.indexOf(u8, display_coin, "/") != null) {
+        if (is_spot) {
             if (std.mem.indexOf(u8, raw.body, coin)) |idx| {
-                var buf: [8192]u8 = undefined;
-                const prefix = raw.body[0..idx];
-                const suffix = raw.body[idx + coin.len ..];
-                const len = (std.fmt.bufPrint(&buf, "{s}{s}{s}", .{ prefix, display_coin, suffix }) catch {
-                    try w.jsonRaw(raw.body);
+                const new_len = raw.body.len - coin.len + display_coin.len;
+                if (new_len <= 8192) {
+                    var buf: [8192]u8 = undefined;
+                    const prefix = raw.body[0..idx];
+                    const suffix = raw.body[idx + coin.len ..];
+                    const len = (std.fmt.bufPrint(&buf, "{s}{s}{s}", .{ prefix, display_coin, suffix }) catch {
+                        try w.jsonRaw(raw.body);
+                        return;
+                    }).len;
+                    try w.jsonRaw(buf[0..len]);
                     return;
-                }).len;
-                try w.jsonRaw(buf[0..len]);
-                return;
+                }
             }
         }
         try w.jsonRaw(raw.body);

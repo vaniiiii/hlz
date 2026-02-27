@@ -23,6 +23,18 @@ hlz sell BTC 0.1 --reduce-only
 hlz buy ETH 1.0 @3500 --tif alo
 ```
 
+### Spot Orders
+
+Use `BASE/QUOTE` syntax for spot markets:
+
+```bash
+hlz buy PURR/USDC 100 @0.065     # Limit buy 100 PURR
+hlz sell HYPE/USDC 1.0            # Market sell HYPE
+hlz buy HPL/USDH 0.5 @500        # Buy on non-USDC pair
+```
+
+Spot pairs are resolved via the spot universe. Transfer USDC to spot balance first with `hlz send <AMT> USDC --to spot`.
+
 ### `hlz sell <COIN> <SIZE> [@PRICE]`
 
 Same syntax as `buy`, but sells.
