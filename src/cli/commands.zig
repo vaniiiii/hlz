@@ -1189,12 +1189,20 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
         break :blk .{ .limit = .{ .tif = tif } };
     } else .{ .limit = .{ .tif = .FrontendMarket } };
 
+    // For market orders, resolve spot pair name for book lookup
+    var book_coin_upper: [16]u8 = undefined;
+    var book_spot_buf: [16]u8 = undefined;
+    const book_coin = if (std.mem.indexOf(u8, a.coin, "/") != null)
+        resolveSpotCoin(allocator, config, upperCoin(a.coin, &book_coin_upper), &book_spot_buf)
+    else
+        a.coin;
+
     const limit_px = if (a.price) |px_str|
         Decimal.fromString(px_str) catch return error.Overflow
     else if (a.slippage) |sl_str|
         Decimal.fromString(sl_str) catch return error.Overflow
     else blk: {
-        var book_typed = client.getL2Book(a.coin) catch
+        var book_typed = client.getL2Book(book_coin) catch
             break :blk if (is_buy) Decimal.fromString("999999") catch unreachable else Decimal.fromString("0.01") catch unreachable;
         defer book_typed.deinit();
         const bl = book_typed.value.levels;
@@ -2406,13 +2414,13 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
         const quote = coin[slash + 1 ..];
         var typed = try client.getSpotMeta();
         defer typed.deinit();
+        const tokens = typed.value.tokens;
         for (typed.value.universe) |pair| {
-            if (std.mem.indexOf(u8, pair.name, "/")) |ns| {
-                const n_base = pair.name[0..ns];
-                const n_quote = pair.name[ns + 1 ..];
-                if (std.ascii.eqlIgnoreCase(n_base, base) and std.ascii.eqlIgnoreCase(n_quote, quote)) {
-                    return @intCast(pair.index);
-                }
+            if (pair.tokens[0] >= tokens.len or pair.tokens[1] >= tokens.len) continue;
+            if (std.ascii.eqlIgnoreCase(tokens[pair.tokens[0]].name, base) and
+                std.ascii.eqlIgnoreCase(tokens[pair.tokens[1]].name, quote))
+            {
+                return @intCast(10000 + pair.index);
             }
         }
         return error.AssetNotFound;
