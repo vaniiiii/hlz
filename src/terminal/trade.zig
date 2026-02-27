@@ -474,10 +474,10 @@ const WsWorker = struct {
     // ── Decode + Apply (parse outside lock, apply under lock) ──
 
     fn decodeAndApplyBook(data: []const u8, shared: *Shared, depth: usize) void {
-        const WsBookMsg = struct { data: resp_types.L2Book = .{} };
-        const parsed = std.json.parseFromSlice(WsBookMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
+        // data is already extracted from WS message (no wrapper)
+        const parsed = std.json.parseFromSlice(resp_types.L2Book, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const bl = parsed.value.data.levels;
+        const bl = parsed.value.levels;
 
         var bids: [64]BookLevel = undefined;
         var asks: [64]BookLevel = undefined;
@@ -505,10 +505,10 @@ const WsWorker = struct {
     }
 
     fn decodeAndApplyTrades(data: []const u8, shared: *Shared) void {
-        const WsTradesMsg = struct { data: []resp_types.Trade = &.{} };
-        const parsed = std.json.parseFromSlice(WsTradesMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
+        // data is already extracted — it's the trade array directly
+        const parsed = std.json.parseFromSlice([]resp_types.Trade, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const trade_list = parsed.value.data;
+        const trade_list = parsed.value;
         const new_count = @min(trade_list.len, MAX_ROWS);
 
         shared.mu.lock();
@@ -555,10 +555,10 @@ const WsWorker = struct {
     }
 
     fn decodeAndApplyCandle(data: []const u8, shared: *Shared) void {
-        const WsCandleMsg = struct { data: resp_types.Candle = .{} };
-        const parsed = std.json.parseFromSlice(WsCandleMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
+        // data is already extracted — it's the candle object directly
+        const parsed = std.json.parseFromSlice(resp_types.Candle, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        const c = parsed.value.data;
+        const c = parsed.value;
         if (c.t == 0) return;
         shared.applyCandle(.{
             .t = @as(i64, @intCast(c.t)),
@@ -569,10 +569,11 @@ const WsWorker = struct {
     }
 
     fn decodeAndApplyInfo(data: []const u8, shared: *Shared) void {
-        const WsCtxMsg = struct { data: struct { ctx: resp_types.AssetContext = .{} } = .{} };
-        const parsed = std.json.parseFromSlice(WsCtxMsg, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
+        // data is already extracted — it's {"coin":"BTC","ctx":{...}}
+        const CtxWrapper = struct { ctx: resp_types.AssetContext = .{} };
+        const parsed = std.json.parseFromSlice(CtxWrapper, std.heap.page_allocator, data, resp_types.ParseOpts) catch return;
         defer parsed.deinit();
-        shared.applyInfo(buildInfoFromCtx(parsed.value.data.ctx));
+        shared.applyInfo(buildInfoFromCtx(parsed.value.ctx));
     }
 };
 
