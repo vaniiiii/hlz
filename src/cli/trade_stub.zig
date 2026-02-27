@@ -1,8 +1,8 @@
 const std = @import("std");
-const hyperzig = @import("hyperzig");
+const hlz = @import("hlz");
 
 pub const Config = struct {
-    chain: hyperzig.hypercore.signing.Chain = .mainnet,
+    chain: hlz.hypercore.signing.Chain = .mainnet,
     key_hex: ?[]const u8 = null,
     address: ?[]const u8 = null,
 };

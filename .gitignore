@@ -1,12 +1,23 @@
 .zig-cache/
 zig-cache/
 zig-out/
-ratatui/
-binsider/
-reference
-tui_demo
 .env
 .DS_Store
 *.swp
 *~
-notcurses/
+
+# Docs build artifacts
+docs/node_modules/
+docs/dist/
+docs/bun.lock
+
+# Internal
+CLAUDE.md
+PLAN.md
+CONTEXT.md
+context7.json
+skills/
+.claude/
+
+# Reference repos (symlinks to local clones)
+reference

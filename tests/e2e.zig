@@ -1,13 +1,13 @@
 const std = @import("std");
-const hyperzig = @import("hyperzig");
+const hlz = @import("hlz");
 
-const client_mod = hyperzig.hypercore.client;
-const response_mod = hyperzig.hypercore.response;
-const signing = hyperzig.hypercore.signing;
-const types = hyperzig.hypercore.types;
-const msgpack = hyperzig.encoding.msgpack;
-const Signer = hyperzig.crypto.signer.Signer;
-const Decimal = hyperzig.math.decimal.Decimal;
+const client_mod = hlz.hypercore.client;
+const response_mod = hlz.hypercore.response;
+const signing = hlz.hypercore.signing;
+const types = hlz.hypercore.types;
+const msgpack = hlz.encoding.msgpack;
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
 
 const READ_ONLY_USER = "0xe0e8c1d735698060477e79a8e4c20276fc2ec7a7";
 const ETH_ASSET_INDEX: usize = 1;

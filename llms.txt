@@ -1,0 +1,52 @@
+# hlz
+
+> Zig SDK, CLI, and trading terminal for Hyperliquid. 38 CLI commands, 30 HTTP endpoints, 13 WebSocket subscription types, 62 response types.
+
+## Documentation
+
+- [Getting Started](https://hlz.dev/introduction/getting-started): Install and first commands
+- [Installation](https://hlz.dev/introduction/installation): Pre-built binaries, build from source, Zig dependency
+- [Configuration](https://hlz.dev/introduction/configuration): Keys, environment variables, config file
+
+## CLI
+
+- [CLI Overview](https://hlz.dev/cli): 38 commands, pipe-aware output, exit codes
+- [Market Data](https://hlz.dev/cli/market-data): price, mids, funding, book, perps, spot, dexes
+- [Trading](https://hlz.dev/cli/trading): buy, sell, cancel, modify, leverage, twap, batch
+- [Account](https://hlz.dev/cli/account): portfolio, positions, orders, fills, balance
+- [Transfers](https://hlz.dev/cli/transfers): send tokens between addresses and contexts
+- [Streaming](https://hlz.dev/cli/streaming): WebSocket real-time data streams
+- [Key Management](https://hlz.dev/cli/keys): Encrypted keystore management
+- [Agent Integration](https://hlz.dev/cli/agent-integration): AI agent and automation guide
+
+## SDK
+
+- [SDK Overview](https://hlz.dev/sdk): Module structure, quick example, design principles
+- [HTTP Client](https://hlz.dev/sdk/client): 30 endpoints, typed responses
+- [Signing](https://hlz.dev/sdk/signing): RMP and EIP-712 paths
+- [WebSocket](https://hlz.dev/sdk/websocket): 13 subscription types, protocol details
+- [Types](https://hlz.dev/sdk/types): OrderRequest, BatchOrder, response types
+- [Decimal Math](https://hlz.dev/sdk/decimal): 38-digit precision arithmetic
+
+## Terminal
+
+- [Trading Terminal](https://hlz.dev/terminal): Features, architecture
+- [Keybindings](https://hlz.dev/terminal/keybindings): Navigation, timeframes, market switching
+
+## Guides
+
+- [Building a Trading Bot](https://hlz.dev/guides/trading-bot): Shell and Zig SDK examples
+- [Streaming Market Data](https://hlz.dev/guides/streaming): Real-time data pipelines
+- [Agent Payments](https://hlz.dev/guides/agent-payments): Free instant transfers for AI agents
+
+## Reference
+
+- [CLI Commands](https://hlz.dev/reference/cli): Complete command reference
+- [SDK API](https://hlz.dev/reference/sdk): All client methods and response types
+- [TUI Framework](https://hlz.dev/reference/tui): Buffer, Layout, List, Chart API
+- [WebSocket Protocol](https://hlz.dev/reference/websocket): Subscription messages and data formats
+- [Benchmarks](https://hlz.dev/benchmarks): Performance data
+
+## Credits
+
+Inspired by [hypersdk](https://github.com/infinitefield/hypersdk) (Rust SDK), [hyperliquid-cli](https://github.com/chrisling-dev/hyperliquid-cli) (TypeScript CLI), and [zabi](https://github.com/Raiden1411/zabi) (Zig Ethereum tooling).

@@ -20,15 +20,15 @@
 //! - eip712_struct_hash: hash Agent struct (no signing)
 
 const std = @import("std");
-const hyperzig = @import("hyperzig");
+const hlz = @import("hlz");
 
-const Signer = hyperzig.crypto.signer.Signer;
-const Decimal = hyperzig.math.decimal.Decimal;
-const types = hyperzig.hypercore.types;
-const signing = hyperzig.hypercore.signing;
-const msgpack = hyperzig.encoding.msgpack;
-const eip712 = hyperzig.crypto.eip712;
-const keccak256 = hyperzig.crypto.signer.keccak256;
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
+const types = hlz.hypercore.types;
+const signing = hlz.hypercore.signing;
+const msgpack = hlz.encoding.msgpack;
+const eip712 = hlz.crypto.eip712;
+const keccak256 = hlz.crypto.signer.keccak256;
 
 // ── Shared test fixtures ──────────────────────────────────────────
 

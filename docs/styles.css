@@ -1,0 +1,38 @@
+/* hlz — zig orange accent */
+
+/* Center search on landing page */
+[data-layout="landing"] .vocs_DesktopTopNav .vocs_DesktopSearch_search {
+  margin: 0 auto;
+}
+
+:root {
+  --vocs-color_accent: #f7a41d;
+  --vocs-color_accentHover: #e8961a;
+  --vocs-color_accentText: #fff;
+}
+
+:root.dark {
+  --vocs-color_accent: #f7a41d;
+  --vocs-color_accentHover: #fdb63e;
+  --vocs-color_accentText: #000;
+}
+
+/* Landing page feature cards hover */
+.vocs_Content a[href]:has(> div) {
+  transition: border-color 0.2s, background-color 0.2s;
+}
+.vocs_Content a[href]:has(> div):hover {
+  border-color: #f7a41d !important;
+  background: rgba(247, 164, 29, 0.04);
+}
+:root.dark .vocs_Content a[href]:has(> div):hover {
+  background: rgba(247, 164, 29, 0.08);
+}
+
+/* Orange tint on inline code */
+.vocs_Content :not(pre) > code {
+  color: #d48806;
+}
+:root.dark .vocs_Content :not(pre) > code {
+  color: #f7a41d;
+}

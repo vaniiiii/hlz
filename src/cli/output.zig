@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const args_mod = @import("args.zig");
-const Decimal = @import("hyperzig").math.decimal.Decimal;
+const Decimal = @import("hlz").math.decimal.Decimal;
 
 const OutputFormat = args_mod.OutputFormat;
 

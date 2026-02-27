@@ -7,9 +7,9 @@
 //! 4. ~/.hl/config file
 
 const std = @import("std");
-const hyperzig = @import("hyperzig");
-const signer_mod = hyperzig.crypto.signer;
-const signing = hyperzig.hypercore.signing;
+const hlz = @import("hlz");
+const signer_mod = hlz.crypto.signer;
+const signing = hlz.hypercore.signing;
 const args_mod = @import("args.zig");
 const keystore = @import("keystore.zig");
 

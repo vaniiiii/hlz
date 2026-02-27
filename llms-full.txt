@@ -1,0 +1,2742 @@
+# hlz — Complete Documentation
+
+> Zig SDK, CLI (38 commands), and trading terminal for Hyperliquid.
+> 30 HTTP endpoints, 13 WebSocket subscription types, 62 response types.
+
+---
+
+# Getting Started
+
+hlz gives you three things:
+
+1. **`hlz`** — A 38-command CLI for Hyperliquid (636KB)
+2. **`hlz-terminal`** — A full trading terminal (768KB)
+3. **hlz** — A Zig library for building your own tools
+
+## Install the CLI
+
+```bash
+curl -fsSL https://hlz.dev/install.sh | sh
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/hlz/hlz
+cd hlz
+zig build -Doptimize=ReleaseSmall
+# Binary at zig-out/bin/hlz
+```
+
+## Configure
+
+Set your private key:
+
+```bash
+# Option 1: Environment variable
+export HL_KEY="your_private_key_hex"
+
+# Option 2: Encrypted keystore (recommended)
+hlz keys new default
+# Enter password when prompted
+
+# Option 3: Config file (~/.hlz.json)
+echo '{"key_name":"default","address":"0x..."}' > ~/.hlz.json
+```
+
+## Your First Commands
+
+No authentication needed for market data:
+
+```bash
+hlz price BTC              # Current price + spread
+hlz funding --top 5        # Top funding rates
+hlz book ETH --live        # Live order book
+```
+
+Place a trade:
+
+```bash
+hlz buy BTC 0.1 @50000     # Limit buy 0.1 BTC at $50,000
+hlz sell ETH 1.0            # Market sell 1 ETH
+```
+
+Check your account:
+
+```bash
+hlz portfolio               # Positions + balances
+hlz orders                  # Open orders
+```
+
+Launch the trading terminal:
+
+```bash
+hlz trade BTC               # Full TUI with chart, book, tape
+```
+
+## Use as a Zig Library
+
+Add to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .hlz = .{
+        .url = "git+https://github.com/hlz/hlz#main",
+    },
+},
+```
+
+Then in your code:
+
+```zig
+const hlz = @import("hlz");
+const client = hlz.hypercore.client.Client.mainnet(allocator);
+defer client.deinit();
+
+// Fetch all mid prices (no auth needed)
+var result = try client.getAllMids(null);
+defer result.deinit();
+// result.value is a parsed response
+```
+
+## Next Steps
+
+- [CLI commands](/cli) — Full command reference
+- [SDK guide](/sdk) — Building with the Zig library
+- [Trading terminal](/terminal) — Terminal keybindings and features
+- [Agent integration](/cli/agent-integration) — Using `hlz` in automated workflows
+
+---
+
+# Installation
+
+## Pre-built Binaries
+
+```bash
+curl -fsSL https://hlz.dev/install.sh | sh
+```
+
+This downloads the latest release for your platform and installs:
+- `hlz` — CLI tool (636KB)
+- `hlz-terminal` — Trading terminal (768KB)
+
+Supported platforms:
+- macOS (Apple Silicon, Intel)
+- Linux (x86_64, aarch64)
+
+## Build from Source
+
+Requires [Zig 0.15.2](https://ziglang.org/download/).
+
+```bash
+git clone https://github.com/hlz/hlz
+cd hlz
+
+# Debug build (fast compile, larger binary)
+zig build
+
+# Production build (636KB stripped binary)
+zig build -Doptimize=ReleaseSmall
+
+# Fastest execution (1.4MB)
+zig build -Doptimize=ReleaseFast
+```
+
+Binaries are output to `zig-out/bin/`.
+
+## As a Zig Dependency
+
+Add to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .hlz = .{
+        .url = "git+https://github.com/hlz/hlz#main",
+    },
+},
+```
+
+Then in `build.zig`:
+
+```zig
+const hlz_dep = b.dependency("hlz", .{
+    .target = target,
+    .optimize = optimize,
+});
+exe.root_module.addImport("hlz", hlz_dep.module("hlz"));
+```
+
+## Verify Installation
+
+```bash
+hlz version
+hlz price BTC     # Should show current BTC price
+```
+
+## Updating
+
+```bash
+# Pre-built binary
+curl -fsSL https://hlz.dev/install.sh | sh
+
+# From source
+git pull && zig build -Doptimize=ReleaseSmall
+```
+
+---
+
+# Configuration
+
+## Authentication
+
+hlz needs a private key for trading operations. Market data commands work without auth.
+
+### Encrypted Keystore (Recommended)
+
+```bash
+# Generate a new key
+hlz keys new trading
+
+# Import an existing key
+hlz keys import trading --private-key 0xYOUR_KEY
+
+# Set as default
+hlz keys default trading
+
+# List all keys
+hlz keys ls
+```
+
+Keys are stored encrypted at `~/.hlz/keys/`. Use `--key-name` to select a specific key per command.
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `HL_KEY` | Private key (raw hex, no 0x prefix) |
+| `HL_PASSWORD` | Keystore password (for `--key-name`) |
+| `HL_ADDRESS` | Default wallet address (for read-only queries) |
+| `HL_CHAIN` | Default chain: `mainnet` (default) or `testnet` |
+| `HL_OUTPUT` | Default output format: `json`, `pretty`, or `csv` |
+| `NO_COLOR` | Disable colored output |
+
+### Config File
+
+Create `~/.hlz.json`:
+
+```json
+{
+  "key_name": "trading",
+  "address": "0xYourAddress",
+  "chain": "mainnet"
+}
+```
+
+### Priority Order
+
+1. Command-line flags (`--key`, `--key-name`, `--chain`)
+2. Environment variables (`HL_KEY`, `HL_CHAIN`)
+3. Config file (`~/.hlz.json`)
+4. Defaults (mainnet, no key)
+
+## Testnet
+
+Add `--chain testnet` to any command:
+
+```bash
+hlz buy BTC 0.1 @50000 --chain testnet
+```
+
+Or set globally:
+
+```bash
+export HL_CHAIN=testnet
+```
+
+## Output Formats
+
+| Flag | When | Format |
+|------|------|--------|
+| (none, TTY) | Interactive terminal | Colored tables |
+| (none, piped) | `hlz price BTC \| jq` | JSON (auto-detected) |
+| `--json` | Explicit | JSON |
+| `--output pretty` | Explicit | Formatted tables |
+| `--output csv` | Explicit | CSV |
+| `--quiet` / `-q` | Minimal | Just the value |
+
+---
+
+# CLI Overview
+
+`hlz` is a 38-command CLI for Hyperliquid. 636KB static binary, zero config required for market data.
+
+## Design Principles
+
+- **Pipe-aware** — Tables on TTY, JSON when piped. No surprises.
+- **Agent-native** — Structured output, semantic exit codes, no interactive prompts.
+- **One binary** — Everything in 636KB. No runtime dependencies.
+- **Smart defaults** — Works out of the box. Power users customize.
+
+## Command Categories
+
+| Category | Commands | Auth Required |
+|----------|----------|---------------|
+| [Market Data](/cli/market-data) | `price`, `mids`, `funding`, `book`, `perps`, `spot`, `dexes` | No |
+| [Trading](/cli/trading) | `buy`, `sell`, `cancel`, `modify`, `leverage`, `twap`, `batch` | Yes |
+| [Account](/cli/account) | `portfolio`, `positions`, `orders`, `fills`, `balance`, `status`, `referral` | Address only |
+| [Transfers](/cli/transfers) | `send` | Yes |
+| [Streaming](/cli/streaming) | `stream` | No (public) / Yes (user events) |
+| [Keys](/cli/keys) | `keys ls/new/import/export/default/rm` | No |
+| [TUI](/terminal) | `trade`, `markets` | Yes (trading) / No (viewing) |
+
+## Global Flags
+
+```
+--output json|pretty|csv    Output format (auto-json when piped)
+--json                      Shorthand for --output json
+--quiet, -q                 Minimal output (just result value)
+--chain mainnet|testnet     Target chain
+--key <HEX>                 Private key (prefer keystore)
+--key-name <NAME>           Use named keystore key
+--address <ADDR>            User address for queries
+--dry-run, -n               Preview trade without sending
+```
+
+## Exit Codes
+
+| Code | Meaning | Example |
+|------|---------|---------|
+| `0` | Success | Command completed |
+| `1` | Error | API error, invalid response |
+| `2` | Usage error | Bad arguments, unknown command |
+| `3` | Auth error | Missing key or address |
+| `4` | Network error | Connection refused, timeout |
+
+## Asset Name Syntax
+
+hlz uses a unified asset syntax across all commands:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| `SYMBOL` | `BTC`, `ETH` | Perpetual on Hyperliquid DEX |
+| `BASE/QUOTE` | `PURR/USDC` | Spot market |
+| `dex:SYMBOL` | `xyz:BTC` | HIP-3 DEX perpetual |
+
+---
+
+# Market Data
+
+All market data commands work without authentication.
+
+## `hlz price <COIN>`
+
+Get the current mid price with bid/ask spread.
+
+```bash
+hlz price BTC
+# BTC: $97,432.50  bid $97,432.00 / ask $97,433.00  spread 0.001%
+
+hlz price BTC --json
+# {"coin":"BTC","mid":"97432.5","bid":"97432.0","ask":"97433.0","spread":"0.00103"}
+```
+
+## `hlz mids [COIN]`
+
+All mid prices. Optionally filter by coin.
+
+```bash
+hlz mids                    # Top 20 by default
+hlz mids --all              # All markets
+hlz mids --page 2           # Page 2
+hlz mids BTC                # Just BTC
+
+# Pipe to jq for custom filtering
+hlz mids --json | jq '.[] | select(.mid > 1000)'
+```
+
+## `hlz funding [--top N]`
+
+Funding rates with visual heat bars.
+
+```bash
+hlz funding                 # All markets
+hlz funding --top 10        # Top 10 by absolute rate
+```
+
+## `hlz book <COIN> [--live]`
+
+L2 order book. Use `--live` for real-time WebSocket updates.
+
+```bash
+hlz book BTC                # Snapshot
+hlz book ETH --live         # Live updating (Ctrl+C to exit)
+```
+
+## `hlz perps [--dex xyz]`
+
+List perpetual markets.
+
+```bash
+hlz perps                   # Hyperliquid native markets
+hlz perps --dex xyz         # HIP-3 DEX markets
+hlz perps --all             # All DEXes combined
+hlz perps --filter BTC      # Search markets
+```
+
+## `hlz spot [--all]`
+
+List spot markets.
+
+```bash
+hlz spot                    # Top spot markets
+hlz spot --all              # All spot markets
+```
+
+## `hlz dexes`
+
+List available HIP-3 DEXes.
+
+```bash
+hlz dexes
+```
+
+---
+
+# Trading
+
+All trading commands require authentication. See [Configuration](/introduction/configuration).
+
+## Placing Orders
+
+### `hlz buy <COIN> <SIZE> [@PRICE]`
+
+```bash
+# Market buy (executes immediately at best available price)
+hlz buy BTC 0.1
+
+# Limit buy at $50,000
+hlz buy BTC 0.1 @50000
+
+# With take-profit and stop-loss
+hlz buy BTC 0.1 @50000 --tp 55000 --sl 48000
+
+# Reduce-only order
+hlz sell BTC 0.1 --reduce-only
+
+# Maker-only (post-only)
+hlz buy ETH 1.0 @3500 --tif alo
+```
+
+### `hlz sell <COIN> <SIZE> [@PRICE]`
+
+Same syntax as `buy`, but sells.
+
+```bash
+hlz sell ETH 1.0 @3500     # Limit sell
+hlz sell SOL 10             # Market sell
+```
+
+### Trigger Orders
+
+```bash
+# Take-profit trigger at $55,000
+hlz sell BTC 0.1 --trigger-above 55000
+
+# Stop-loss trigger at $48,000
+hlz sell BTC 0.1 --trigger-below 48000
+```
+
+### Dry Run
+
+Preview any order without submitting:
+
+```bash
+hlz buy BTC 0.1 @50000 --dry-run
+# Shows the signed order payload without sending
+```
+
+## Managing Orders
+
+### `hlz cancel <COIN> [OID]`
+
+```bash
+hlz cancel BTC 12345        # Cancel specific order
+hlz cancel BTC              # Cancel all BTC orders
+hlz cancel --all            # Cancel all open orders
+```
+
+### `hlz modify <COIN> <OID> <SIZE> <PRICE>`
+
+```bash
+hlz modify BTC 12345 0.2 51000    # Change size and price
+```
+
+## Leverage
+
+### `hlz leverage <COIN> [N]`
+
+```bash
+hlz leverage BTC             # Query current leverage
+hlz leverage BTC 10          # Set to 10x
+```
+
+## Advanced
+
+### `hlz twap <COIN> buy|sell <SIZE> --duration <TIME> --slices <N>`
+
+Time-weighted average price execution. Splits a large order into smaller slices.
+
+```bash
+hlz twap BTC buy 1.0 --duration 1h --slices 10
+# Places 0.1 BTC buy every 6 minutes for 1 hour
+```
+
+### `hlz batch "order1" "order2" ...`
+
+Execute multiple orders atomically.
+
+```bash
+hlz batch "buy BTC 0.1 @98000" "sell ETH 1.0 @3500"
+
+# From stdin (useful for scripts)
+echo "buy BTC 0.1 @98000
+sell ETH 1.0 @3500" | hlz batch --stdin
+```
+
+## Trading Flags
+
+| Flag | Description |
+|------|-------------|
+| `--reduce-only` | Only reduce existing position |
+| `--tp <PX>` | Take-profit price (bracket order) |
+| `--sl <PX>` | Stop-loss price (bracket order) |
+| `--trigger-above <PX>` | Trigger order above price (take-profit) |
+| `--trigger-below <PX>` | Trigger order below price (stop-loss) |
+| `--slippage <PX>` | Max slippage for market orders |
+| `--tif gtc\|ioc\|alo` | Time-in-force (default: gtc) |
+| `--dry-run`, `-n` | Preview without sending |
+
+## Time-in-Force
+
+| Value | Meaning |
+|-------|---------|
+| `gtc` | Good-til-cancelled (default) |
+| `ioc` | Immediate-or-cancel |
+| `alo` | Add-liquidity-only (post-only, maker) |
+
+---
+
+# Account
+
+Account commands show positions, orders, fills, and balances. They require an address — either via `--address`, `HL_ADDRESS`, config file, or derived from your key.
+
+## `hlz portfolio [ADDR]`
+
+Combined view of positions and spot balances.
+
+```bash
+hlz portfolio
+hlz portfolio 0x1234...     # View another address
+```
+
+## `hlz positions [ADDR]`
+
+Open perpetual positions.
+
+```bash
+hlz positions
+hlz positions --json | jq '.[] | {coin, size, pnl}'
+```
+
+## `hlz orders [ADDR]`
+
+Open orders.
+
+```bash
+hlz orders
+hlz orders --json
+```
+
+## `hlz fills [ADDR]`
+
+Recent trade fills.
+
+```bash
+hlz fills
+hlz fills --json | jq '.[] | select(.coin == "BTC")'
+```
+
+## `hlz balance [ADDR]`
+
+Account balance and margin health.
+
+```bash
+hlz balance
+```
+
+## `hlz status <OID>`
+
+Check the status of a specific order by OID.
+
+```bash
+hlz status 12345
+hlz status 12345 --json
+```
+
+## `hlz referral [set <CODE>]`
+
+View referral status or set a referral code.
+
+```bash
+hlz referral                # View current status
+hlz referral set MYCODE     # Set referral code
+```
+
+## HIP-3 DEX Queries
+
+Account commands support HIP-3 DEX filtering:
+
+```bash
+hlz positions --dex xyz         # Positions on a specific DEX
+hlz orders --all-dexes          # Orders across all DEXes
+```
+
+---
+
+# Transfers
+
+Send tokens between addresses and between balance contexts (perp ↔ spot).
+
+## `hlz send <AMOUNT> [TOKEN] <DESTINATION>`
+
+### Send to Another Address
+
+```bash
+# Send USDC (default token)
+hlz send 100 0xRecipientAddress
+
+# Send a specific token
+hlz send 5 HYPE 0xRecipientAddress
+
+# Send spot token
+hlz send 10 PURR/USDC 0xRecipientAddress
+```
+
+### Internal Transfers
+
+Move funds between your own perp and spot balances:
+
+```bash
+# Perp → Spot
+hlz send 100 USDC --to spot
+
+# Spot → Perp
+hlz send 100 USDC --to perp
+```
+
+Transfers on Hyperliquid are **free and instant** — no gas fees.
+
+---
+
+# Streaming
+
+Real-time WebSocket streams. Data flows continuously until you Ctrl+C.
+
+## `hlz stream <TYPE> <COIN|ADDR>`
+
+### Market Data Streams (No Auth)
+
+```bash
+hlz stream trades BTC       # Real-time trades
+hlz stream bbo BTC          # Best bid/offer updates
+hlz stream book ETH         # L2 order book updates
+hlz stream candles BTC      # Candlestick updates
+hlz stream mids             # All mid price updates
+```
+
+### User Streams (Requires Auth)
+
+```bash
+hlz stream fills 0xAddr     # User's trade fills
+hlz stream orders 0xAddr    # User's order updates
+```
+
+### Output
+
+Each message is a JSON line, making it easy to pipe:
+
+```bash
+# Log trades to file
+hlz stream trades BTC >> btc_trades.jsonl
+
+# Filter large trades
+hlz stream trades BTC --json | jq 'select(.sz > 1)'
+
+# Feed to another program
+hlz stream bbo ETH | my_trading_bot
+```
+
+### WebSocket Details
+
+- Server sends `Ping`, client responds with `{"method":"pong"}`
+- Reconnects automatically on connection loss
+- Messages are JSON, one per line
+- Supports all 13 Hyperliquid subscription types
+
+---
+
+# Key Management
+
+hlz stores keys in encrypted keystores, compatible with Foundry's format.
+
+## Commands
+
+### `hlz keys new <NAME>`
+
+Generate a new secp256k1 private key and store it encrypted.
+
+```bash
+hlz keys new trading
+# Enter password: ****
+# Address: 0x1234...abcd
+# Stored in: ~/.hlz/keys/trading
+```
+
+### `hlz keys import <NAME>`
+
+Import an existing private key.
+
+```bash
+hlz keys import trading --private-key 0xYOUR_KEY
+# Enter password: ****
+```
+
+### `hlz keys ls`
+
+List all stored keys.
+
+```bash
+hlz keys ls
+# NAME      ADDRESS                                    DEFAULT
+# trading   0x1234...abcd                              ✓
+# backup    0x5678...efgh
+```
+
+### `hlz keys default <NAME>`
+
+Set the default key used when no `--key-name` is specified.
+
+```bash
+hlz keys default trading
+```
+
+### `hlz keys export <NAME>`
+
+Export the decrypted private key (use with caution).
+
+```bash
+hlz keys export trading
+# Enter password: ****
+# 0xYOUR_PRIVATE_KEY
+```
+
+### `hlz keys rm <NAME>`
+
+Remove a stored key.
+
+```bash
+hlz keys rm backup
+```
+
+## Security
+
+- Keys are encrypted with AES-128-CTR + scrypt KDF
+- Password is never stored
+- Use `HL_PASSWORD` env var for automation (be careful with shell history)
+- Consider `hlz approve-agent <ADDR>` for API wallets with limited permissions
+
+---
+
+# Agent Integration
+
+hlz is designed for AI agents and automated workflows. Every command works non-interactively with structured output.
+
+## Design Guarantees
+
+| Property | Guarantee |
+|----------|-----------|
+| **No prompts** | Every command completes without user input |
+| **Structured output** | JSON when piped, `--json` flag always available |
+| **Semantic exit codes** | `0`=OK, `1`=error, `2`=usage, `3`=auth, `4`=network |
+| **Dry-run mode** | `--dry-run` previews any trade without submitting |
+| **Stdin batch** | Pipe order lists via `--stdin` |
+| **Deterministic** | Same inputs → same outputs (except market data) |
+
+## Detecting Output Mode
+
+hlz auto-detects whether stdout is a TTY:
+
+```bash
+# TTY: colored tables
+hlz positions
+
+# Piped: JSON automatically
+hlz positions | jq .
+
+# Explicit JSON
+hlz positions --json
+
+# Minimal output
+hlz price BTC -q    # Just: 97432.5
+```
+
+## Agent Workflow Examples
+
+### Check-then-trade
+
+```bash
+PRICE=$(hlz price BTC -q)
+if (( $(echo "$PRICE < 50000" | bc -l) )); then
+  hlz buy BTC 0.1 @${PRICE} --json
+fi
+```
+
+### Monitor and react
+
+```bash
+hlz stream trades BTC | while read -r line; do
+  SIZE=$(echo "$line" | jq -r '.sz')
+  if (( $(echo "$SIZE > 10" | bc -l) )); then
+    echo "Large trade detected: $line"
+    # React to whale trades
+  fi
+done
+```
+
+### Batch from file
+
+```bash
+# orders.txt:
+# buy BTC 0.1 @98000
+# buy ETH 1.0 @3400
+# sell SOL 100 @180
+
+cat orders.txt | hlz batch --stdin --json
+```
+
+### Portfolio snapshot
+
+```bash
+# Capture full state as JSON
+hlz portfolio --json > snapshot_$(date +%s).json
+hlz orders --json >> snapshot_$(date +%s).json
+```
+
+## Environment Variables
+
+Configure everything via environment for CI/agents:
+
+```bash
+export HL_KEY="private_key_hex"       # Trading key
+export HL_ADDRESS="0x..."             # Default address
+export HL_CHAIN="mainnet"             # or testnet
+export HL_OUTPUT="json"               # Always JSON
+export HL_PASSWORD="keystore_pass"    # Keystore password
+```
+
+## Error Handling
+
+Errors are written to stderr. JSON errors include a structured envelope:
+
+```bash
+hlz buy INVALID 0.1 2>/dev/null
+echo $?  # 2 (usage error)
+
+hlz buy BTC 0.1 @50000 --json 2>&1
+# stderr: {"error":"missing key","code":3}
+```
+
+## Rate Limits
+
+Hyperliquid API: 1200 requests/minute per IP. The CLI doesn't add any additional throttling — manage this in your agent logic.
+
+## Agent-Approve Workflow
+
+For security, use a dedicated API wallet:
+
+```bash
+# Generate a new API wallet
+hlz keys new api-agent
+
+# Approve it from your main wallet
+hlz approve-agent 0xAPI_WALLET_ADDRESS
+
+# Agent uses the API wallet (limited permissions)
+export HL_KEY_NAME=api-agent
+```
+
+---
+
+# SDK Overview
+
+Zig library for Hyperliquid with typed API responses. Signing adapted from [zabi](https://github.com/Raiden1411/zabi)'s EIP-712 and ECDSA implementation.
+
+## What's Included
+
+| Component | Details |
+|-----------|---------|
+| **Signing** | secp256k1 + EIP-712 (based on zabi) |
+| **HTTP Client** | 18 info + 12 exchange endpoints, typed responses |
+| **WebSocket** | 13 subscription types |
+| **Decimal Math** | 38-digit precision |
+| **MessagePack** | Byte-exact with Rust `rmp-serde::to_vec_named` |
+
+## Module Structure
+
+```zig
+const hlz = @import("hlz");
+
+// Core primitives (lib/)
+hlz.crypto.signer      // secp256k1 ECDSA + RFC 6979
+hlz.crypto.eip712      // EIP-712 typed data hashing
+hlz.math.decimal        // 38-digit decimal type
+hlz.encoding.msgpack    // MessagePack encoder
+
+// Hyperliquid SDK (sdk/)
+hlz.hypercore.client    // HTTP client
+hlz.hypercore.signing   // Signing orchestration
+hlz.hypercore.types     // Order types, BatchOrder, TimeInForce
+hlz.hypercore.ws        // WebSocket subscriptions
+hlz.hypercore.response  // 62 response types
+hlz.hypercore.tick      // Price tick rounding
+```
+
+## Quick Example
+
+```zig
+const hlz = @import("hlz");
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
+const types = hlz.hypercore.types;
+const signing = hlz.hypercore.signing;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const signer = try Signer.fromHex("your_64_char_hex_key");
+
+    // Build an order
+    const order = types.OrderRequest{
+        .asset = 0,  // BTC
+        .is_buy = true,
+        .limit_px = try Decimal.fromString("50000"),
+        .sz = try Decimal.fromString("0.1"),
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = types.ZERO_CLOID,
+    };
+
+    const batch = types.BatchOrder{
+        .orders = &[_]types.OrderRequest{order},
+        .grouping = .na,
+    };
+
+    // Sign (34.5µs, zero allocs)
+    const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+    const sig = try signing.signOrder(signer, batch, nonce, .mainnet, null, null);
+
+    // Submit
+    var client = hlz.hypercore.client.Client.mainnet(allocator);
+    defer client.deinit();
+    var result = try client.place(signer, batch, nonce, null, null);
+    defer result.deinit();
+}
+```
+
+## Design Principles
+
+- **Explicit allocators** — Every function that allocates takes an `Allocator` parameter
+- **Type-safe responses** — All endpoints return `Parsed(T)` with proper Zig types
+- **Comptime where possible** — EIP-712 type hashes computed at compile time
+
+---
+
+# HTTP Client
+
+The SDK client provides typed access to all Hyperliquid HTTP endpoints.
+
+## Creating a Client
+
+```zig
+const Client = hlz.hypercore.client.Client;
+
+// Mainnet
+var client = Client.mainnet(allocator);
+defer client.deinit();
+
+// Testnet
+var client = Client.testnet(allocator);
+defer client.deinit();
+```
+
+## Info Endpoints (No Auth)
+
+All info endpoints are public. They return `Parsed(T)` — call `.deinit()` when done.
+
+```zig
+// All mid prices
+var mids = try client.getAllMids(null);
+defer mids.deinit();
+
+// Market metadata + asset contexts
+var meta = try client.getMetaAndAssetCtxs(null);
+defer meta.deinit();
+
+// Account state
+var state = try client.getClearinghouseState(address, null);
+defer state.deinit();
+
+// Open orders
+var orders = try client.getOpenOrders(address, null);
+defer orders.deinit();
+
+// User fills
+var fills = try client.getUserFills(address, null);
+defer fills.deinit();
+
+// L2 order book
+var book = try client.getL2Book("BTC", null);
+defer book.deinit();
+
+// Candle data
+var candles = try client.getCandleSnapshot("BTC", "1h", null);
+defer candles.deinit();
+```
+
+### Full List of Info Methods
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `getAllMids` | Raw JSON | All mid prices (dynamic keys) |
+| `getMeta` | `Meta` | Market metadata |
+| `getMetaAndAssetCtxs` | `MetaAndAssetCtxs` | Meta + live context |
+| `getClearinghouseState` | `ClearinghouseState` | Account margin state |
+| `getOpenOrders` | `[]OpenOrder` | User's open orders |
+| `getUserFills` | `[]Fill` | User's recent fills |
+| `getOrderStatus` | `OrderStatus` | Status by OID |
+| `getL2Book` | `L2Book` | Order book snapshot |
+| `getCandleSnapshot` | `[]Candle` | OHLCV candles |
+| `getFundingHistory` | `[]FundingEntry` | Funding rate history |
+| `getSpotMeta` | `SpotMeta` | Spot market metadata |
+| `getSpotClearinghouseState` | `SpotClearinghouseState` | Spot balances |
+| `getPerpDexs` | `[]PerpDex` | HIP-3 DEX list |
+| `getUserFees` | `UserFees` | Fee rates |
+| `getReferral` | `Referral` | Referral info |
+| `getSubAccounts` | `[]SubAccount` | Sub-accounts |
+| `getPerpsAtOpenInterest` | Raw JSON | OI data |
+
+## Exchange Endpoints (Signed)
+
+Exchange endpoints require a `Signer` and produce EIP-712 signatures.
+
+```zig
+const signer = try Signer.fromHex("your_key");
+const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+
+// Place order
+var result = try client.place(signer, batch_order, nonce, null, null);
+defer result.deinit();
+
+// Cancel by OID
+var result = try client.cancel(signer, cancel_request, nonce, null, null);
+defer result.deinit();
+
+// Cancel by CLOID
+var result = try client.cancelByCloid(signer, cancel_request, nonce, null, null);
+defer result.deinit();
+
+// Modify order
+var result = try client.modify(signer, modify_request, nonce, null, null);
+defer result.deinit();
+
+// Set leverage
+var result = try client.updateLeverage(signer, asset, leverage, nonce, null, null);
+defer result.deinit();
+
+// Send USDC
+var result = try client.usdSend(signer, send_request, nonce);
+defer result.deinit();
+```
+
+### Full List of Exchange Methods
+
+| Method | Description |
+|--------|-------------|
+| `place` | Place order(s) |
+| `cancel` | Cancel by OID |
+| `cancelByCloid` | Cancel by client order ID |
+| `modify` | Modify existing order |
+| `batchModify` | Modify multiple orders |
+| `scheduleCancel` | Schedule future cancellation |
+| `updateLeverage` | Set leverage |
+| `updateIsolatedMargin` | Adjust isolated margin |
+| `usdSend` | Send USDC |
+| `spotSend` | Send spot tokens |
+| `sendAsset` | Send between contexts |
+| `approveAgent` | Approve API wallet |
+
+## Raw vs Typed
+
+For `--json` passthrough, use raw methods. For typed access, use `get*` methods:
+
+```zig
+// Typed (returns parsed struct)
+var typed = try client.getClearinghouseState(addr, null);
+defer typed.deinit();
+// typed.value.marginSummary.accountValue...
+
+// Raw (returns HTTP body as string)
+var raw = try client.clearinghouseState(addr, null);
+defer raw.deinit();
+// raw.body is the JSON string
+```
+
+**Rule**: Never fetch both. Branch on output format early.
+
+---
+
+# Signing
+
+hlz implements two signing paths, matching the Hyperliquid protocol. The secp256k1 and EIP-712 implementation is adapted from [zabi](https://github.com/Raiden1411/zabi).
+
+## Signing Paths
+
+### RMP Path (Orders, Cancels)
+
+Used for: `place`, `cancel`, `cancelByCloid`, `modify`, `batchModify`, `scheduleCancel`
+
+```
+Action → MessagePack → prepend nonce + vault → keccak256 → Agent EIP-712 (chainId 1337)
+```
+
+```zig
+const signing = hlz.hypercore.signing;
+
+const sig = try signing.signOrder(signer, batch, nonce, .mainnet, null, null);
+// sig.r, sig.s, sig.v ready for JSON: {"r":"0x...","s":"0x...","v":27}
+```
+
+### Typed Data Path (Transfers, Approvals)
+
+Used for: `usdSend`, `spotSend`, `sendAsset`, `updateLeverage`, `updateIsolatedMargin`, `approveAgent`, `setReferrer`
+
+```
+Fields → EIP-712 struct hash → Arbitrum domain (chainId 42161 mainnet / 421614 testnet)
+```
+
+```zig
+const sig = try signing.signUsdSend(signer, destination, amount, nonce, .mainnet);
+```
+
+## The Signer
+
+```zig
+const Signer = hlz.crypto.signer.Signer;
+
+// From hex string (64 chars, no 0x prefix)
+const signer = try Signer.fromHex("abcdef1234...");
+
+// The signer holds the private key and can produce ECDSA signatures
+// It uses RFC 6979 deterministic nonces (no randomness needed)
+```
+
+## Chain Enum
+
+```zig
+const Chain = signing.Chain;
+
+Chain.mainnet   // Arbitrum One (42161) for typed data, 1337 for agent
+Chain.testnet   // Arbitrum Sepolia (421614) for typed data, 1337 for agent
+```
+
+## MessagePack Compatibility
+
+The msgpack encoding must be **byte-exact** with Rust's `rmp-serde::to_vec_named`. This means:
+- Named fields (not positional)
+- Specific integer encoding widths
+- Map ordering matches Rust struct field order
+- The `type` field is embedded inside the map (serde `#[serde(tag = "type")]`)
+
+## EIP-712 Details
+
+All 7 EIP-712 type hashes are computed at **compile time**:
+
+```zig
+// Comptime: typeHash("Agent", "Agent(address source,address connectionId,...)")
+// No runtime string hashing or allocation
+```
+
+The domain separator uses:
+- `name = "Exchange"`
+- `version = "1"`
+- `chainId` = 42161 (mainnet) or 421614 (testnet) for typed data
+- `chainId` = 1337 for agent-signed actions (orders, cancels)
+- `verifyingContract = 0x0000000000000000000000000000000000000000`
+
+---
+
+# WebSocket
+
+Real-time market data and user event streaming via WebSocket.
+
+## Subscription Types
+
+| Type | Data | Auth |
+|------|------|------|
+| `trades` | Real-time trades | No |
+| `l2Book` | Order book updates | No |
+| `bbo` | Best bid/offer | No |
+| `candle` | Candlestick updates | No |
+| `allMids` | All mid prices | No |
+| `activeAssetCtx` | Asset context (funding, OI) | No |
+| `userEvents` | User fills, liquidations | Yes |
+| `userFills` | User trade fills | Yes |
+| `userFundings` | User funding payments | Yes |
+| `orderUpdates` | Order status changes | Yes |
+| `notification` | System notifications | Yes |
+| `webData2` | Extended web data | Yes |
+| `activeAssetData` | User asset data (leverage, margin) | Yes |
+
+## Protocol Details
+
+### Connection
+
+```
+wss://api.hyperliquid.xyz/ws     (mainnet)
+wss://api.hyperliquid-testnet.xyz/ws  (testnet)
+```
+
+### Ping/Pong
+
+Hyperliquid uses **app-level** ping/pong (not WebSocket protocol-level):
+
+- Server sends: `Ping` (plain text)
+- Client must respond: `{"method":"pong"}`
+- Timeout: ~30 seconds without pong → disconnect
+
+### Subscribe
+
+```json
+{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}
+```
+
+### Unsubscribe
+
+```json
+{"method":"unsubscribe","subscription":{"type":"trades","coin":"BTC"}}
+```
+
+### Message Format
+
+All messages arrive as JSON with a channel wrapper:
+
+```json
+{"channel":"trades","data":[{"coin":"BTC","side":"B","px":"97432.5","sz":"0.1","time":1234567890}]}
+```
+
+The SDK's `ws_types.extractData()` strips the outer wrapper — decode functions receive the `data` value directly.
+
+## SDK Usage
+
+```zig
+const Ws = hlz.hypercore.ws;
+
+// The WS module provides subscription type definitions
+// Actual WebSocket connection is managed by the terminal/CLI layer
+// using websocket.zig for the transport
+```
+
+## Thread Safety
+
+- WebSocket reads are **blocking** — run in a dedicated thread
+- Use `shutdown(fd)` to break out of a blocking read (for coin/interval switches)
+- **Do not** use `SO_RCVTIMEO` with TLS on macOS (causes segfaults)
+- Parse messages outside the lock, apply results under the lock
+
+---
+
+# Types
+
+Core types for orders, actions, and responses.
+
+## Order Types
+
+### `OrderRequest`
+
+```zig
+const OrderRequest = struct {
+    asset: u32,              // Market index (0=BTC, 1=ETH, ...)
+    is_buy: bool,
+    limit_px: Decimal,       // Price as 38-digit decimal
+    sz: Decimal,             // Size
+    reduce_only: bool,
+    order_type: OrderType,   // Limit, trigger, or market
+    cloid: Cloid,            // Client order ID (optional)
+};
+```
+
+### `OrderType`
+
+```zig
+const OrderType = union(enum) {
+    limit: struct { tif: TimeInForce },
+    trigger: struct {
+        trigger_px: Decimal,
+        is_market: bool,
+        tpsl: TpSl,
+    },
+};
+```
+
+### `TimeInForce`
+
+| Value | Meaning |
+|-------|---------|
+| `Gtc` | Good-til-cancelled |
+| `Ioc` | Immediate-or-cancel |
+| `Alo` | Add-liquidity-only (post-only) |
+| `FrontendMarket` | Market order (used internally) |
+
+### `BatchOrder`
+
+```zig
+const BatchOrder = struct {
+    orders: []const OrderRequest,
+    grouping: OrderGrouping,  // .na, .normalTpSl, .positionTpSl
+};
+```
+
+## Response Types
+
+All 62 response types live in `response.zig`. Key ones:
+
+### `ClearinghouseState`
+
+```zig
+const ClearinghouseState = struct {
+    marginSummary: MarginSummary,
+    crossMarginSummary: MarginSummary,
+    assetPositions: []AssetPosition,
+    // ... 
+};
+```
+
+### `OpenOrder`
+
+```zig
+const OpenOrder = struct {
+    coin: []const u8,
+    side: []const u8,
+    limitPx: []const u8,
+    sz: []const u8,
+    oid: u64,
+    // ...
+};
+```
+
+### Response Conventions
+
+- All fields use `camelCase` matching JSON keys exactly
+- All fields have defaults for forward compatibility: `= ""`, `= 0`, `= Decimal.ZERO`
+- Parse options: `{ .ignore_unknown_fields = true, .allocate = .alloc_always }`
+- Returned as `Parsed(T)` — call `.deinit()` to free
+
+## Decimal Type
+
+`Decimal` is a 38-digit decimal type used for all prices and sizes:
+
+```zig
+const Decimal = hlz.math.decimal.Decimal;
+
+const price = try Decimal.fromString("50000.5");
+const size = try Decimal.fromString("0.001");
+
+// Arithmetic
+const total = price.mul(size);
+
+// Format to string (stack buffer, no allocation)
+var buf: [32]u8 = undefined;
+const str = total.toString(&buf);
+```
+
+## Asset Index Resolution
+
+The SDK resolves human-readable asset names to numeric indices at runtime:
+
+```
+"BTC"        → asset index 0
+"ETH"        → asset index 1
+"PURR/USDC"  → spot market index
+"xyz:BTC"    → HIP-3 DEX market index
+```
+
+This resolution uses the metadata from `getMetaAndAssetCtxs()`.
+
+---
+
+# Decimal Math
+
+hlz includes a 38-digit decimal type for precise financial arithmetic. No floating-point errors.
+
+## Creating Decimals
+
+```zig
+const Decimal = hlz.math.decimal.Decimal;
+
+// From string (most common)
+const price = try Decimal.fromString("50000.5");
+const size = try Decimal.fromString("0.001");
+
+// Special values
+const zero = Decimal.ZERO;
+```
+
+## Formatting
+
+```zig
+var buf: [32]u8 = undefined;
+const str = price.toString(&buf);
+// "50000.5"
+```
+
+Smart formatting auto-scales by magnitude — no trailing zeros, appropriate decimal places.
+
+## Why Not `f64`?
+
+Floating-point math produces rounding errors that are unacceptable for financial operations:
+
+```
+f64: 0.1 + 0.2 = 0.30000000000000004
+Decimal: 0.1 + 0.2 = 0.3
+```
+
+The Hyperliquid API uses string-encoded decimals. hlz's `Decimal` type preserves exact precision through the entire pipeline: parse → compute → sign → serialize.
+
+---
+
+# Trading Terminal
+
+`hlz-terminal` (or `hlz trade`) is a full-featured trading terminal for Hyperliquid.
+
+## Launch
+
+```bash
+hlz trade BTC              # Open with BTC
+hlz trade ETH              # Open with ETH
+hlz trade                  # Opens with default market
+```
+
+## Features
+
+- **Candlestick chart** — Multiple timeframes (1m, 5m, 15m, 1h, 4h, 1d)
+- **Live order book** — Depth visualization with bid/ask spread
+- **Trade tape** — Real-time fills with size highlighting
+- **Order entry** — Place, modify, cancel from the terminal
+- **Position display** — Current positions with PnL
+- **250fps rendering** — Smooth, flicker-free updates
+
+## Architecture
+
+The terminal runs three threads:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  UI Thread (4ms loop)                                    │
+│  pollKey → snapshot shared state → render to terminal    │
+├─────────────────────────────────────────────────────────┤
+│  WS Thread (blocking)                                    │
+│  l2Book, trades, candle, activeAssetCtx                  │
+├─────────────────────────────────────────────────────────┤
+│  REST Thread (500ms loop)                                │
+│  positions, orders, fills                                │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key rule**: UI thread never does network I/O. Workers never touch the terminal buffer.
+
+## State Model
+
+- **UiState** — Owned by UI thread. Cursor position, panel focus, input buffer. Never locked.
+- **Shared** — Written by workers, read by UI via snapshot. Locked with a mutex.
+- **Snapshot** — Immutable copy taken under lock once per frame. Render reads freely.
+
+## Colors
+
+Uses the Hyperliquid color palette:
+- Green (#4ade80) for buys / positive PnL
+- Red (#f87171) for sells / negative PnL
+- Cyan for headers and highlights
+- Gray for secondary information
+
+---
+
+# Keybindings
+
+## Navigation
+
+| Key | Action |
+|-----|--------|
+| `Tab` | Switch panel focus |
+| `↑` / `k` | Move up |
+| `↓` / `j` | Move down |
+| `←` / `h` | Scroll left |
+| `→` / `l` | Scroll right |
+| `/` | Search / filter |
+| `Enter` | Select |
+| `Esc` | Cancel / close |
+| `q` | Quit |
+
+## Timeframes
+
+| Key | Timeframe |
+|-----|-----------|
+| `1` | 1 minute |
+| `2` | 5 minutes |
+| `3` | 15 minutes |
+| `4` | 1 hour |
+| `5` | 4 hours |
+| `6` | 1 day |
+
+## Market Switching
+
+| Key | Action |
+|-----|--------|
+| `c` | Change coin |
+| Type symbol | Quick search |
+
+## Interactive Lists
+
+When viewing markets, perps, spot, or other list views:
+
+| Key | Action |
+|-----|--------|
+| `s` | Sort by column |
+| `n` / `p` | Next / previous page |
+| `/` | Search filter |
+| `Esc` | Clear filter |
+
+---
+
+# Terminal Architecture
+
+The trading terminal is a ~2,200 line single-file module (`src/terminal/trade.zig`) using the numbered-section pattern.
+
+## Thread Model
+
+```
+┌──────────────────────────────────┐
+│ UI Thread (main)                  │
+│ Loop: pollKey → snapshot → render │
+│ Rate: 250fps (4ms per frame)      │
+│ Never blocks on I/O               │
+└──────┬───────────────────────────┘
+       │ mutex (snapshot)
+┌──────┴───────────────────────────┐
+│ Shared State                      │
+│ bids, asks, trades, candles,      │
+│ positions, orders, fills, ctx     │
+│ gen counter for change detection  │
+└──────┬──────────────┬────────────┘
+       │              │
+┌──────┴──────┐ ┌─────┴────────────┐
+│ WS Thread   │ │ REST Thread       │
+│ Blocking    │ │ 500ms poll loop   │
+│ l2Book      │ │ positions         │
+│ trades      │ │ orders            │
+│ candle      │ │ fills             │
+│ assetCtx    │ │                   │
+└─────────────┘ └──────────────────┘
+```
+
+## State Ownership
+
+### UiState (UI thread only)
+
+```zig
+const UiState = struct {
+    focus: Panel,          // Which panel has focus
+    cursor: usize,         // Cursor position in active list
+    input_buf: [64]u8,     // Text input buffer
+    input_len: usize,
+    // ... never shared, never locked
+};
+```
+
+### Shared (mutex-protected)
+
+```zig
+const Shared = struct {
+    mu: std.Thread.Mutex,
+    gen: u64,              // Bumped on every update
+    bids: [64]BookLevel,
+    asks: [64]BookLevel,
+    trades: [128]Trade,
+    candles: [512]Candle,
+    // ... workers write, UI snapshots
+};
+```
+
+### Snapshot (immutable copy)
+
+```zig
+fn takeSnapshot(shared: *Shared) Snapshot {
+    shared.mu.lock();
+    defer shared.mu.unlock();
+    return .{
+        .gen = shared.gen,
+        .bids = shared.bids,
+        .asks = shared.asks,
+        // ... memcpy under lock, then render freely
+    };
+}
+```
+
+## Parse Outside Lock, Apply Under Lock
+
+Workers follow this pattern for minimal lock contention:
+
+```zig
+fn decodeAndApplyBook(data: []const u8, shared: *Shared) void {
+    // 1. Parse JSON (no lock held)
+    const parsed = std.json.parseFromSlice(...) catch return;
+    defer parsed.deinit();
+
+    // 2. Build result on stack
+    var bids: [64]BookLevel = undefined;
+    // ... fill from parsed data
+
+    // 3. Apply under lock (fast memcpy only)
+    shared.applyBook(bids, asks, n, max_cum);
+}
+```
+
+## Rendering
+
+- **Double-buffered**: Write to `buf`, diff against `prev`, emit only changed cells
+- **Synchronized updates**: Frames wrapped in `\x1b[?2026h` ... `\x1b[?2026l`
+- **Incremental SGR**: Track fg/bg/bold/dim state, emit only diffs
+- **No allocations**: All rendering uses stack buffers and the pre-allocated Buffer grid
+
+## Coin Switching
+
+When the user switches coins:
+1. UI writes new coin to Shared
+2. UI calls `shutdown()` on the WS socket file descriptor
+3. WS thread detects the closed socket, reads new coin from Shared
+4. WS thread reconnects with new subscriptions
+
+This avoids `SO_RCVTIMEO` which corrupts macOS TLS state.
+
+---
+
+# TUI Framework
+
+hlz includes a standalone TUI framework — no SDK dependency, usable for any terminal application.
+
+## Modules
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `Buffer.zig` | 482 | Double-buffered cell grid with RGB color and diff flush |
+| `Terminal.zig` | 197 | Raw mode, input ring buffer, key parsing |
+| `Layout.zig` | 193 | Two-pass constraint layout engine |
+| `List.zig` | 380 | Scrollable list with search, sort, pagination |
+| `Chart.zig` | 408 | Candlestick chart renderer |
+| `App.zig` | 108 | Frame lifecycle (beginFrame/endFrame/pollKey) |
+
+## Design Principles
+
+- **Zero allocations** in render paths — all stack buffers and fixed arrays
+- **Static limits** — `MAX_ROWS=32`, `MAX_COLS=8`, `MAX_ITEMS=512`
+- **No dependencies** — pure Zig stdlib, no SDK imports
+- **Double-buffered** — write to buffer, diff against previous, emit only changes
+- **250fps capable** — optimized for high frame rate rendering
+
+## Quick Example
+
+```zig
+const tui = @import("tui");
+
+var app = try tui.App.init();
+defer app.deinit();
+
+while (true) {
+    app.beginFrame();
+
+    // Get terminal size
+    const size = app.size();
+
+    // Write to buffer
+    app.buf.putStr(0, 0, "Hello, TUI!", .{ .fg = tui.Color.hex(0x4ade80) });
+
+    // Check for input
+    if (app.pollKey()) |key| {
+        if (key == 'q') break;
+    }
+
+    app.endFrame();
+}
+```
+
+---
+
+# Buffer
+
+`Buffer.zig` is a double-buffered cell grid for flicker-free terminal rendering.
+
+## How It Works
+
+1. **Write** to the current buffer (`buf`)
+2. **Diff** against the previous buffer (`prev`)
+3. **Emit** only changed cells to the terminal
+4. **Swap** buffers
+
+This minimizes terminal I/O and eliminates flicker.
+
+## Color System
+
+```zig
+const Color = union(enum) {
+    default,           // Terminal default
+    basic: u8,         // 16-color (0-15)
+    rgb: [3]u8,        // 24-bit RGB
+};
+
+// Comptime hex constructor
+const green = Color.hex(0x4ade80);
+const red = Color.hex(0xf87171);
+```
+
+## Cell Style
+
+```zig
+const Style = struct {
+    fg: Color = .default,
+    bg: Color = .default,
+    bold: bool = false,
+    dim: bool = false,
+};
+```
+
+## Performance Stats
+
+Every flush produces `Buffer.Stats`:
+
+| Field | Description |
+|-------|-------------|
+| `cells_changed` | Number of cells that differ from previous frame |
+| `cursor_moves` | Number of cursor repositioning sequences emitted |
+| `style_emits` | Number of SGR (color/style) sequences emitted |
+| `write_bytes` | Total bytes written to terminal |
+| `flush_ns` | Time taken for the flush operation |
+
+## Synchronized Updates
+
+Frames are wrapped in terminal synchronized update sequences:
+
+```
+\x1b[?2026h    ← begin synchronized update
+... cell data ...
+\x1b[?2026l    ← end synchronized update
+```
+
+This tells the terminal to batch all changes and display them atomically, preventing partial-frame artifacts.
+
+---
+
+# Layout
+
+`Layout.zig` is a two-pass constraint layout engine for dividing terminal space.
+
+## Constraints
+
+```zig
+const Constraint = union(enum) {
+    fixed: u16,        // Exact number of cells
+    min: u16,          // Minimum cells
+    ratio: f32,        // Proportion of remaining space
+    fill,              // Take all remaining space
+};
+```
+
+## Usage
+
+```zig
+const Layout = tui.Layout;
+
+// Horizontal split: 30-cell sidebar + fill
+const cols = Layout.horizontal(size.width, &[_]Constraint{
+    .{ .fixed = 30 },
+    .fill,
+});
+// cols[0] = { .x = 0, .width = 30 }
+// cols[1] = { .x = 30, .width = remaining }
+
+// Vertical split: header + fill + status bar
+const rows = Layout.vertical(size.height, &[_]Constraint{
+    .{ .fixed = 1 },
+    .fill,
+    .{ .fixed = 1 },
+});
+```
+
+## Two-Pass Algorithm
+
+1. **First pass**: Allocate fixed and min constraints
+2. **Second pass**: Distribute remaining space to ratio and fill constraints
+
+No cassowary solver or constraint propagation — just direct arithmetic. Fast and predictable.
+
+---
+
+# Widgets
+
+## List
+
+`List.zig` — Scrollable list with search, sort, and pagination.
+
+### Features
+
+- **Vim-style navigation** — `j`/`k` or arrow keys
+- **Search** — `/` to filter, `Esc` to clear
+- **Sort** — `s` to cycle sort column
+- **Pagination** — `n`/`p` for next/previous page
+- **Static limits** — `MAX_ITEMS=512`, no dynamic allocation
+
+### Used For
+
+- Market browser (`hlz markets`)
+- Perps list (`hlz perps`)
+- Spot list (`hlz spot`)
+- Funding rates (`hlz funding`)
+- Mid prices (`hlz mids`)
+
+## Chart
+
+`Chart.zig` — Candlestick chart renderer using Unicode block characters.
+
+### Features
+
+- **OHLCV candles** with body and wick rendering
+- **Auto-scaling** Y-axis based on visible data range
+- **Multiple timeframes** — 1m, 5m, 15m, 1h, 4h, 1d
+- **Color-coded** — Green for bullish, red for bearish candles
+- **Zero allocations** — Fixed-size candle buffer on stack
+
+### Rendering
+
+Uses Unicode half-block characters (`▀`, `▄`, `█`) for sub-cell resolution, giving 2× vertical resolution compared to character-level rendering.
+
+---
+
+# Building a Trading Bot
+
+This guide shows how to build a simple trading bot using the `hlz` CLI and shell scripting. For complex bots, use the Zig SDK directly.
+
+## Prerequisites
+
+```bash
+# Install hlz
+curl -fsSL https://hlz.dev/install.sh | sh
+
+# Set up your key
+hlz keys new bot
+export HL_KEY_NAME=bot
+export HL_PASSWORD=your_password
+export HL_OUTPUT=json
+```
+
+## Simple Grid Bot
+
+Places buy and sell orders at fixed intervals around the current price:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+COIN="BTC"
+SIZE="0.01"
+LEVELS=5
+SPREAD="50"  # dollars between levels
+
+# Get current mid price
+MID=$(hlz price $COIN -q)
+echo "Mid price: $MID"
+
+# Place grid orders
+for i in $(seq 1 $LEVELS); do
+  OFFSET=$(echo "$i * $SPREAD" | bc)
+  BUY_PX=$(echo "$MID - $OFFSET" | bc)
+  SELL_PX=$(echo "$MID + $OFFSET" | bc)
+  
+  hlz buy $COIN $SIZE @$BUY_PX --json
+  hlz sell $COIN $SIZE @$SELL_PX --json
+done
+
+echo "Grid placed: $LEVELS levels, $SPREAD spread"
+```
+
+## Monitor and Rebalance
+
+```bash
+#!/bin/bash
+# Check positions every 30 seconds, rebalance if needed
+
+while true; do
+  POS=$(hlz positions --json | jq -r '.[] | select(.coin == "BTC") | .szi')
+  
+  if [ -z "$POS" ]; then
+    POS="0"
+  fi
+  
+  # If position exceeds threshold, reduce
+  if (( $(echo "$POS > 0.5" | bc -l) )); then
+    echo "Position too large ($POS), reducing..."
+    hlz sell BTC 0.1 --reduce-only --json
+  elif (( $(echo "$POS < -0.5" | bc -l) )); then
+    echo "Short too large ($POS), reducing..."
+    hlz buy BTC 0.1 --reduce-only --json
+  fi
+  
+  sleep 30
+done
+```
+
+## Using the Zig SDK
+
+For lower latency and more control, use the SDK directly:
+
+```zig
+const hlz = @import("hlz");
+const Client = hlz.hypercore.client.Client;
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
+const types = hlz.hypercore.types;
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+
+    const signer = try Signer.fromHex("your_key");
+    var client = Client.mainnet(allocator);
+    defer client.deinit();
+
+    // Fetch current mid price
+    var mids = try client.getAllMids(null);
+    defer mids.deinit();
+
+    // Build and sign order (34.5µs, zero allocs)
+    const order = types.OrderRequest{
+        .asset = 0,
+        .is_buy = true,
+        .limit_px = try Decimal.fromString("50000"),
+        .sz = try Decimal.fromString("0.01"),
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = types.ZERO_CLOID,
+    };
+
+    const batch = types.BatchOrder{
+        .orders = &[_]types.OrderRequest{order},
+        .grouping = .na,
+    };
+
+    const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+    var result = try client.place(signer, batch, nonce, null, null);
+    defer result.deinit();
+}
+```
+
+## Best Practices
+
+1. **Always use `--dry-run` first** — Test your bot logic without real orders
+2. **Set position limits** — Use `--reduce-only` to prevent runaway positions
+3. **Handle all exit codes** — `3` = auth error, `4` = network error
+4. **Use keystores** — Don't put private keys in scripts
+5. **Rate limit yourself** — Hyperliquid allows 1200 req/min per IP
+
+---
+
+# Streaming Market Data
+
+Real-time data from Hyperliquid via WebSocket.
+
+## Basic Streaming
+
+```bash
+# Trades (each line is a JSON trade)
+hlz stream trades BTC
+
+# Best bid/offer
+hlz stream bbo ETH
+
+# Full order book
+hlz stream book BTC
+
+# Candlesticks
+hlz stream candles BTC
+
+# All mid prices
+hlz stream mids
+```
+
+## Piping to Files
+
+```bash
+# Log to JSONL file
+hlz stream trades BTC >> btc_trades.jsonl
+
+# Rotate daily
+hlz stream trades BTC >> trades_$(date +%Y%m%d).jsonl
+```
+
+## Filtering with jq
+
+```bash
+# Only large trades (> 1 BTC)
+hlz stream trades BTC | jq 'select(.sz > 1)'
+
+# Only sells
+hlz stream trades BTC | jq 'select(.side == "S")'
+
+# Extract just price and size
+hlz stream trades BTC | jq '{px: .px, sz: .sz}'
+```
+
+## Feeding to Other Programs
+
+```bash
+# Python consumer
+hlz stream trades BTC | python3 my_analyzer.py
+
+# Custom Zig program
+hlz stream bbo ETH | ./my_strategy
+```
+
+## Multi-Stream
+
+Run multiple streams in parallel:
+
+```bash
+# Background streams
+hlz stream trades BTC > btc.jsonl &
+hlz stream trades ETH > eth.jsonl &
+hlz stream trades SOL > sol.jsonl &
+wait
+```
+
+## User Event Streams
+
+Monitor your own activity (requires auth):
+
+```bash
+# Your fills
+hlz stream fills 0xYourAddress
+
+# Your order updates
+hlz stream orders 0xYourAddress
+```
+
+---
+
+# Agent Payments
+
+Hyperliquid offers **free, instant transfers** — ideal for AI agent-to-agent payments.
+
+## Why Hyperliquid for Payments
+
+| Chain | Transfer Cost | Speed |
+|-------|--------------|-------|
+| Ethereum | ~$0.50 gas | 12s |
+| Solana | ~$0.001 gas | 400ms |
+| **Hyperliquid** | **$0 (free)** | **< 1s** |
+
+No gas fees means agents can send microtransactions, settle frequently, or split payments across many recipients without worrying about costs.
+
+## Setup
+
+```bash
+# Install
+curl -fsSL https://hlz.dev/install.sh | sh
+
+# Generate agent wallet
+hlz keys new agent
+# Note the address printed — this is where to receive payments
+
+# For automation
+export HL_KEY_NAME=agent
+export HL_PASSWORD=your_password
+```
+
+## Getting Funded
+
+### From a Human
+
+Tell them to bridge USDC via [cctp.to](https://cctp.to):
+
+1. Go to https://cctp.to
+2. Connect wallet (Ethereum, Arbitrum, Base, Solana, etc.)
+3. Enter USDC amount
+4. Set destination to your agent's address on Hyperliquid
+5. Complete — arrives in minutes, zero bridge fees
+
+### From Another Agent
+
+Just share your address. Transfers are free and instant:
+
+```bash
+hlz send 100 USDC 0xYourAgentAddress
+```
+
+## Sending Payments
+
+```bash
+# Send USDC
+hlz send 10 USDC 0xRecipientAddress --json
+
+# Send HYPE tokens
+hlz send 5 HYPE 0xRecipientAddress --json
+
+# Check result
+echo $?  # 0 = success
+```
+
+## Checking Balance
+
+```bash
+# Full balance
+hlz balance --json | jq '.accountValue'
+
+# Quick check
+hlz balance -q
+```
+
+## Internal Transfers
+
+USDC on Hyperliquid exists in two contexts: perps balance and spot balance.
+
+```bash
+# Incoming bridges arrive in spot → move to perps for trading
+hlz send 100 USDC --to perp
+
+# Move from perps to spot for token sends
+hlz send 50 USDC --to spot
+```
+
+## Automated Payment Script
+
+```bash
+#!/bin/bash
+# pay.sh — Send payment and verify
+
+AMOUNT=$1
+DEST=$2
+TOKEN=${3:-USDC}
+
+RESULT=$(hlz send $AMOUNT $TOKEN $DEST --json 2>&1)
+EXIT=$?
+
+if [ $EXIT -eq 0 ]; then
+  echo "Payment sent: $AMOUNT $TOKEN to $DEST"
+else
+  echo "Payment failed (exit $EXIT): $RESULT" >&2
+  exit $EXIT
+fi
+```
+
+## Supported Tokens
+
+- **USDC** — Primary stablecoin
+- **HYPE** — Hyperliquid native token
+- **50+ spot tokens** — Any listed spot token
+
+Check available tokens:
+
+```bash
+hlz spot --json | jq '.[].symbol'
+```
+
+---
+
+# CLI Command Reference
+
+Complete reference for all 38 `hlz` commands.
+
+## Syntax
+
+```
+hlz <command> [args] [flags]
+```
+
+## Commands
+
+### Market Data
+
+#### `hlz price <COIN>`
+Get mid price with bid/ask spread.
+
+**Arguments:** `COIN` — Asset symbol (BTC, ETH, PURR/USDC, xyz:BTC)
+
+**Flags:** `--json`, `--quiet`
+
+---
+
+#### `hlz mids [COIN]`
+All mid prices, optionally filtered.
+
+**Arguments:** `COIN` (optional) — Filter to specific coin
+
+**Flags:** `--all` show all pages, `--page N` pagination, `--dex NAME` HIP-3 filter
+
+---
+
+#### `hlz funding [--top N]`
+Funding rates with heat visualization.
+
+**Flags:** `--top N` show top N by absolute rate
+
+---
+
+#### `hlz book <COIN> [--live]`
+L2 order book snapshot or live stream.
+
+**Arguments:** `COIN` — Asset symbol
+
+**Flags:** `--live` WebSocket live updates
+
+---
+
+#### `hlz perps [--dex NAME]`
+List perpetual markets.
+
+**Flags:** `--dex NAME` HIP-3 DEX, `--all` all DEXes, `--filter TEXT` search, `--page N`
+
+---
+
+#### `hlz spot [--all]`
+List spot markets.
+
+**Flags:** `--all` show all, `--page N`, `--filter TEXT`
+
+---
+
+#### `hlz dexes`
+List HIP-3 DEXes.
+
+---
+
+### Trading
+
+#### `hlz buy <COIN> <SIZE> [@PRICE]`
+#### `hlz sell <COIN> <SIZE> [@PRICE]`
+
+Place a buy or sell order.
+
+**Arguments:**
+- `COIN` — Asset symbol
+- `SIZE` — Order size
+- `@PRICE` (optional) — Limit price. Omit for market order.
+
+**Flags:**
+- `--reduce-only` — Only reduce position
+- `--tp PRICE` — Take-profit bracket
+- `--sl PRICE` — Stop-loss bracket
+- `--trigger-above PRICE` — Trigger above (TP)
+- `--trigger-below PRICE` — Trigger below (SL)
+- `--slippage PRICE` — Max slippage for market
+- `--tif gtc|ioc|alo` — Time-in-force
+- `--dry-run`, `-n` — Preview without sending
+
+---
+
+#### `hlz cancel <COIN> [OID]`
+Cancel orders.
+
+**Arguments:**
+- `COIN` (optional with `--all`) — Asset
+- `OID` (optional) — Specific order ID
+
+**Flags:** `--all` cancel everything, `--cloid ID` cancel by client order ID
+
+---
+
+#### `hlz modify <COIN> <OID> <SIZE> <PRICE>`
+Modify an existing order.
+
+---
+
+#### `hlz leverage <COIN> [N]`
+Query or set leverage.
+
+**Arguments:**
+- `COIN` — Asset
+- `N` (optional) — New leverage value. Omit to query.
+
+---
+
+#### `hlz twap <COIN> buy|sell <SIZE> --duration <TIME> --slices <N>`
+TWAP execution.
+
+---
+
+#### `hlz batch "order1" "order2" ...`
+Batch order execution.
+
+**Flags:** `--stdin` read orders from stdin
+
+---
+
+### Account
+
+#### `hlz portfolio [ADDR]`
+Positions + spot balances.
+
+#### `hlz positions [ADDR]`
+Open positions.
+
+#### `hlz orders [ADDR]`
+Open orders.
+
+#### `hlz fills [ADDR]`
+Recent fills.
+
+#### `hlz balance [ADDR]`
+Account balance and margin health.
+
+#### `hlz status <OID>`
+Order status by ID.
+
+#### `hlz referral [set <CODE>]`
+Referral info or set code.
+
+**Account flags:** `--dex NAME` HIP-3 filter, `--all-dexes`
+
+---
+
+### Transfers
+
+#### `hlz send <AMOUNT> [TOKEN] <DESTINATION>`
+Send tokens.
+
+**Arguments:**
+- `AMOUNT` — Amount to send
+- `TOKEN` (optional, default USDC) — Token name
+- `DESTINATION` — Address or `--to spot|perp` for internal transfers
+
+---
+
+### Streaming
+
+#### `hlz stream <TYPE> <COIN|ADDR>`
+WebSocket stream.
+
+**Types:** `trades`, `bbo`, `book`, `candles`, `mids`, `fills`, `orders`
+
+---
+
+### Key Management
+
+#### `hlz keys ls`
+List stored keys.
+
+#### `hlz keys new <NAME>`
+Generate and store new key.
+
+#### `hlz keys import <NAME>`
+Import existing key. **Flags:** `--private-key HEX`
+
+#### `hlz keys export <NAME>`
+Export decrypted key.
+
+#### `hlz keys default <NAME>`
+Set default key.
+
+#### `hlz keys rm <NAME>`
+Remove key.
+
+---
+
+### Agent
+
+#### `hlz approve-agent <ADDR>`
+Approve an API wallet for your account.
+
+---
+
+### TUI
+
+#### `hlz trade [COIN]`
+Launch trading terminal.
+
+#### `hlz markets`
+Interactive market browser.
+
+---
+
+### Utility
+
+#### `hlz config`
+Show current configuration.
+
+#### `hlz help`
+Show help.
+
+#### `hlz version`
+Show version.
+
+---
+
+# SDK API Reference
+
+## Client Methods
+
+### Info (No Auth)
+
+| Method | Request Type | Response |
+|--------|-------------|----------|
+| `getAllMids(dex)` | `allMids` | Raw JSON `{"BTC":"97432.5",...}` |
+| `getMeta(dex)` | `meta` | `Meta` |
+| `getMetaAndAssetCtxs(dex)` | `metaAndAssetCtxs` | `MetaAndAssetCtxs` |
+| `getClearinghouseState(addr, dex)` | `clearinghouseState` | `ClearinghouseState` |
+| `getOpenOrders(addr, dex)` | `openOrders` | `[]OpenOrder` |
+| `getUserFills(addr, dex)` | `userFills` | `[]Fill` |
+| `getOrderStatus(oid, dex)` | `orderStatus` | `OrderStatus` |
+| `getL2Book(coin, dex)` | `l2Book` | `L2Book` |
+| `getCandleSnapshot(coin, interval, dex)` | `candleSnapshot` | `[]Candle` |
+| `getFundingHistory(coin, dex)` | `fundingHistory` | `[]FundingEntry` |
+| `getSpotMeta(dex)` | `spotMeta` | `SpotMeta` |
+| `getSpotClearinghouseState(addr, dex)` | `spotClearinghouseState` | `SpotClearinghouseState` |
+| `getPerpDexs()` | `perpDexs` | `[]PerpDex` |
+| `getUserFees(addr)` | `userFees` | `UserFees` |
+| `getReferral(addr)` | `referral` | `Referral` |
+| `getSubAccounts(addr)` | `subAccounts` | `[]SubAccount` |
+
+### Exchange (Signed)
+
+| Method | Action | Signing Path |
+|--------|--------|-------------|
+| `place(signer, batch, nonce, vault, expires)` | Order | RMP |
+| `cancel(signer, cancel, nonce, vault, expires)` | Cancel by OID | RMP |
+| `cancelByCloid(signer, cancel, nonce, vault, expires)` | Cancel by CLOID | RMP |
+| `modify(signer, modify, nonce, vault, expires)` | Modify | RMP |
+| `batchModify(signer, modifies, nonce, vault, expires)` | Batch modify | RMP |
+| `scheduleCancel(signer, time, nonce, vault, expires)` | Schedule cancel | RMP |
+| `updateLeverage(signer, asset, lev, nonce, vault, expires)` | Leverage | Typed data |
+| `updateIsolatedMargin(signer, asset, amt, nonce, vault, expires)` | Margin | Typed data |
+| `usdSend(signer, send, nonce)` | Send USDC | Typed data |
+| `spotSend(signer, send, nonce)` | Send spot token | Typed data |
+| `sendAsset(signer, send, nonce)` | Send between contexts | Typed data |
+| `approveAgent(signer, agent, nonce)` | Approve API wallet | Typed data |
+
+## Response Types (62 total)
+
+### Core Types
+
+```
+ClearinghouseState, MarginSummary, AssetPosition, PositionData
+OpenOrder, Fill, OrderStatus, OrderStatusResponse
+L2Book, L2Level, Candle, FundingEntry
+Meta, AssetMeta, AssetCtx, MetaAndAssetCtxs
+SpotMeta, SpotAssetMeta, SpotClearinghouseState, SpotBalance
+PerpDex, UserFees, Referral, SubAccount
+```
+
+### All fields have defaults for forward compatibility:
+
+```zig
+const OpenOrder = struct {
+    coin: []const u8 = "",
+    side: []const u8 = "",
+    limitPx: []const u8 = "",
+    sz: []const u8 = "",
+    oid: u64 = 0,
+    timestamp: u64 = 0,
+    // ... all defaulted
+};
+```
+
+## Signing Module
+
+```
+signing.signOrder(signer, batch, nonce, chain, vault, expires) -> Signature
+signing.signCancel(signer, cancel, nonce, chain, vault, expires) -> Signature
+signing.signCancelByCloid(signer, cancel, nonce, chain, vault, expires) -> Signature
+signing.signModify(signer, modify, nonce, chain, vault, expires) -> Signature
+signing.signUsdSend(signer, dest, amount, nonce, chain) -> Signature
+signing.signSpotSend(signer, dest, token, amount, nonce, chain) -> Signature
+signing.signSendAsset(signer, dest, token, amount, nonce, chain) -> Signature
+signing.signUpdateLeverage(signer, asset, lev, nonce, chain) -> Signature
+signing.signApproveAgent(signer, agent, nonce, chain) -> Signature
+signing.signSetReferrer(signer, code, nonce, chain) -> Signature
+```
+
+## Tick Rounding
+
+```zig
+const tick = hlz.hypercore.tick;
+
+// Round price to valid tick size
+const rounded = tick.roundPrice(price, tick_size);
+
+// Round by side (conservative for orders)
+const ask_price = tick.roundBySide(.ask, price, tick_size, conservative);
+const bid_price = tick.roundBySide(.bid, price, tick_size, conservative);
+```
+
+---
+
+# TUI Framework Reference
+
+## App.zig
+
+```zig
+const App = tui.App;
+
+var app = try App.init();
+defer app.deinit();
+
+app.beginFrame();     // Start frame, clear dirty state
+app.endFrame();       // Flush buffer diff to terminal
+app.pollKey() -> ?Key // Non-blocking key read
+app.size() -> Size    // Terminal dimensions
+```
+
+## Buffer.zig
+
+```zig
+const Buffer = tui.Buffer;
+
+// Writing
+buf.putChar(row, col, char, style);
+buf.putStr(row, col, str, style);
+buf.hLine(row, col, len, char, style);
+buf.vLine(row, col, len, char, style);
+buf.fill(row, col, rows, cols, char, style);
+buf.clear();
+
+// Flushing
+const stats = buf.flush(writer);
+// stats.cells_changed, .cursor_moves, .style_emits, .write_bytes, .flush_ns
+```
+
+### Color
+
+```zig
+const Color = union(enum) {
+    default,
+    basic: u8,       // 0-15
+    rgb: [3]u8,      // 24-bit
+};
+
+Color.hex(0x4ade80)  // Comptime RGB from hex
+```
+
+### Style
+
+```zig
+const Style = struct {
+    fg: Color = .default,
+    bg: Color = .default,
+    bold: bool = false,
+    dim: bool = false,
+};
+```
+
+## Terminal.zig
+
+```zig
+const Terminal = tui.Terminal;
+
+var term = try Terminal.init();
+defer term.deinit();     // Restores cooked mode
+
+term.enableRawMode();
+term.disableRawMode();
+term.getSize() -> struct { rows: u16, cols: u16 };
+```
+
+## Layout.zig
+
+```zig
+const Layout = tui.Layout;
+
+const Constraint = union(enum) {
+    fixed: u16,
+    min: u16,
+    ratio: f32,
+    fill,
+};
+
+Layout.horizontal(width, &constraints) -> []Region
+Layout.vertical(height, &constraints) -> []Region
+```
+
+## List.zig
+
+```zig
+const List = tui.List;
+
+var list = List.init();
+list.setItems(items);
+list.handleKey(key);      // j/k/↑/↓//, sort, page
+list.render(buf, region);
+list.selectedItem() -> ?Item;
+```
+
+## Chart.zig
+
+```zig
+const Chart = tui.Chart;
+
+var chart = Chart.init();
+chart.setCandles(candles);
+chart.render(buf, region);
+```
+
+## Static Limits
+
+| Constant | Value |
+|----------|-------|
+| `MAX_ROWS` | 32 |
+| `MAX_COLS` | 8 |
+| `MAX_ITEMS` | 512 |
+| `MAX_CANDLES` | 512 |
+
+---
+
+# WebSocket Reference
+
+## Endpoints
+
+```
+Mainnet: wss://api.hyperliquid.xyz/ws
+Testnet: wss://api.hyperliquid-testnet.xyz/ws
+```
+
+## Subscription Messages
+
+### Subscribe
+
+```json
+{"method":"subscribe","subscription":{"type":"TYPE","coin":"COIN"}}
+```
+
+### Unsubscribe
+
+```json
+{"method":"unsubscribe","subscription":{"type":"TYPE","coin":"COIN"}}
+```
+
+### Pong (response to server Ping)
+
+```json
+{"method":"pong"}
+```
+
+## Subscription Types
+
+### `trades`
+
+```json
+{"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}
+```
+
+Response data:
+
+```json
+[{"coin":"BTC","side":"B","px":"97432.5","sz":"0.1","hash":"0x...","time":1234567890123}]
+```
+
+### `l2Book`
+
+```json
+{"method":"subscribe","subscription":{"type":"l2Book","coin":"BTC"}}
+```
+
+Response data:
+
+```json
+{"coin":"BTC","levels":[[[price,size],...],[[price,size],...]]}
+```
+
+### `bbo`
+
+```json
+{"method":"subscribe","subscription":{"type":"bbo","coin":"BTC"}}
+```
+
+### `candle`
+
+```json
+{"method":"subscribe","subscription":{"type":"candle","coin":"BTC","interval":"1h"}}
+```
+
+Intervals: `1m`, `5m`, `15m`, `1h`, `4h`, `1d`
+
+### `allMids`
+
+```json
+{"method":"subscribe","subscription":{"type":"allMids"}}
+```
+
+### `activeAssetCtx`
+
+```json
+{"method":"subscribe","subscription":{"type":"activeAssetCtx","coin":"BTC"}}
+```
+
+### `userEvents`
+
+```json
+{"method":"subscribe","subscription":{"type":"userEvents","user":"0x..."}}
+```
+
+### `userFills`
+
+```json
+{"method":"subscribe","subscription":{"type":"userFills","user":"0x..."}}
+```
+
+### `orderUpdates`
+
+```json
+{"method":"subscribe","subscription":{"type":"orderUpdates","user":"0x..."}}
+```
+
+### `activeAssetData`
+
+```json
+{"method":"subscribe","subscription":{"type":"activeAssetData","user":"0x...","coin":"BTC"}}
+```
+
+## Message Format
+
+All messages follow:
+
+```json
+{"channel":"TYPE","data":VALUE}
+```
+
+The `data` field contains the subscription-specific payload. The SDK's `extractData()` strips the wrapper.
+
+## Connection Lifecycle
+
+1. Connect to WSS endpoint
+2. Send subscription messages
+3. Server sends `Ping` periodically
+4. Client must respond with `{"method":"pong"}` within ~30s
+5. Data flows until unsubscribe or disconnect
+
+---
+

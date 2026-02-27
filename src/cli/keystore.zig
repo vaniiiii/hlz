@@ -3,8 +3,8 @@
 //! Storage: ~/.hl/keys/<name>.json
 
 const std = @import("std");
-const hyperzig = @import("hyperzig");
-const Signer = hyperzig.crypto.signer.Signer;
+const hlz = @import("hlz");
+const Signer = hlz.crypto.signer.Signer;
 
 const aes = std.crypto.core.aes;
 const Aes128Ctx = aes.AesEncryptCtx(aes.Aes128);

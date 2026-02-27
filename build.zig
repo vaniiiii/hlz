@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // ── Core library module (lib/ + sdk/) ────────────────────────────
-    const hyperzig = b.addModule("hyperzig", .{
+    const hlz = b.addModule("hlz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -72,7 +72,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "hyperzig", .module = hyperzig },
+            .{ .name = "hlz", .module = hlz },
             .{ .name = "Terminal", .module = tui_terminal },
             .{ .name = "Buffer", .module = tui_buffer },
             .{ .name = "App", .module = tui_app },
@@ -82,19 +82,19 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Trade stub (just prints "use hl-trade")
+    // Trade stub (just prints "use hlz-terminal")
     const trade_stub = b.addModule("trade_stub", .{
         .root_source_file = b.path("src/cli/trade_stub.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
-            .{ .name = "hyperzig", .module = hyperzig },
+            .{ .name = "hlz", .module = hlz },
         },
     });
 
-    // ── `hl` — CLI + TUI lists, no trading terminal ─────────────
+    // ── `hlz` — CLI + TUI lists, no trading terminal ─────────────
     const hl = b.addExecutable(.{
-        .name = "hl",
+        .name = "hlz",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
@@ -102,7 +102,7 @@ pub fn build(b: *std.Build) void {
             .strip = if (optimize != .Debug) true else null,
             .unwind_tables = if (optimize != .Debug) .none else null,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
                 .{ .name = "Terminal", .module = tui_terminal },
                 .{ .name = "Buffer", .module = tui_buffer },
                 .{ .name = "Layout", .module = tui_layout },
@@ -121,11 +121,11 @@ pub fn build(b: *std.Build) void {
 
     const run_hl = b.addRunArtifact(hl);
     if (b.args) |args| run_hl.addArgs(args);
-    b.step("run", "Run the hl CLI").dependOn(&run_hl.step);
+    b.step("run", "Run the hlz CLI").dependOn(&run_hl.step);
 
-    // ── `hl-trade` — full trading terminal ───────────────────────
+    // ── `hlz-terminal` — full trading terminal ───────────────────────
     const hl_trade = b.addExecutable(.{
-        .name = "hl-trade",
+        .name = "hlz-terminal",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
@@ -133,7 +133,7 @@ pub fn build(b: *std.Build) void {
             .strip = if (optimize != .Debug) true else null,
             .unwind_tables = if (optimize != .Debug) .none else null,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
                 .{ .name = "Terminal", .module = tui_terminal },
                 .{ .name = "Buffer", .module = tui_buffer },
                 .{ .name = "Layout", .module = tui_layout },
@@ -154,7 +154,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
 
     // Unit tests (lib + sdk)
-    const unit_tests = b.addTest(.{ .root_module = hyperzig });
+    const unit_tests = b.addTest(.{ .root_module = hlz });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
     // TUI tests
@@ -168,7 +168,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
             },
         }),
     });
@@ -183,7 +183,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = .ReleaseFast,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
             },
         }),
     });
@@ -198,7 +198,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
             },
         }),
     });
@@ -215,7 +215,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "hyperzig", .module = hyperzig },
+                .{ .name = "hlz", .module = hlz },
             },
         }),
     });
@@ -239,7 +239,7 @@ pub fn build(b: *std.Build) void {
 
     // ── Static library (for C FFI) ───────────────────────────────────
     const lib = b.addLibrary(.{
-        .name = "hyperzig",
+        .name = "hlz",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,

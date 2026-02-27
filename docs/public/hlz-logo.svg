@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 155 100">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@700');
+      .letter { font-family: 'Space Grotesk', system-ui, sans-serif; font-size: 88px; font-weight: 700; }
+    </style>
+  </defs>
+  <g id="hl-text">
+    <style>
+      .letter { fill: #121212; }
+      @media (prefers-color-scheme: dark) { .letter { fill: #fff; } }
+    </style>
+    <text class="letter" x="0" y="78">h</text>
+    <text class="letter" x="50" y="78">l</text>
+  </g>
+  <g transform="translate(80, 15) scale(0.49)">
+    <g fill="#f7a41d">
+      <polygon points="46,22 28,44 19,30"/>
+      <polygon points="46,22 33,33 28,44 22,44 22,95 31,95 20,100 12,117 0,117 0,22" shape-rendering="crispEdges"/>
+      <polygon points="31,95 12,117 4,106"/>
+      <polygon points="56,22 62,36 37,44"/>
+      <polygon points="56,22 111,22 111,44 37,44 56,32" shape-rendering="crispEdges"/>
+      <polygon points="116,95 97,117 90,104"/>
+      <polygon points="116,95 100,104 97,117 42,117 42,95" shape-rendering="crispEdges"/>
+      <polygon points="150,0 52,117 3,140 101,22"/>
+      <polygon points="141,22 140,40 122,45"/>
+      <polygon points="153,22 153,117 106,117 120,105 125,95 131,95 131,45 122,45 132,36 141,22" shape-rendering="crispEdges"/>
+      <polygon points="125,95 130,110 106,117"/>
+    </g>
+  </g>
+</svg>

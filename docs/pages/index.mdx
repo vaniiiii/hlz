@@ -1,0 +1,194 @@
+---
+title: hlz — Zig Tooling for Hyperliquid
+content:
+  width: 100%
+layout: landing
+logo: false
+outline: false
+---
+
+import { HomePage } from 'vocs/components'
+
+<HomePage.Root>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;700&display=swap" rel="stylesheet" />
+  <img src="/hlz-wordmark.svg" alt="hlz" style={{ height: '80px', margin: '0 auto 4px' }} />
+  <HomePage.Tagline>Zig Tooling for Hyperliquid</HomePage.Tagline>
+
+<div className="max-md:-mx-[var(--vocs-content_horizontalPadding,24px)] max-md:[&_[data-v-code-container]]:!rounded-none max-md:[&_pre]:!whitespace-pre-wrap max-md:[&_pre]:!overflow-x-hidden max-md:[&_pre]:!break-all max-md:[&_code]:!block max-md:[&_code]:!whitespace-pre-wrap max-md:[&_code]:!break-all max-md:[&_.line]:!whitespace-pre-wrap max-md:[&_.line]:!break-all">
+```bash
+curl -fsSL https://hlz.dev/install.sh | sh
+```
+</div>
+
+  <HomePage.Description>
+    SDK, CLI, and trading terminal for Hyperliquid — written in Zig.
+    38 commands, pipe-aware output, three-thread trading terminal.
+  </HomePage.Description>
+  <HomePage.Buttons>
+    <HomePage.Button href="/introduction/getting-started" variant="accent">Get Started</HomePage.Button>
+    <HomePage.Button href="/guides">Guides</HomePage.Button>
+    <HomePage.Button href="https://github.com/hlz/hlz">GitHub</HomePage.Button>
+  </HomePage.Buttons>
+</HomePage.Root>
+
+<div style={{ maxWidth: '800px', margin: '0 auto' }}>
+
+<div style={{ margin: '48px 0', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--vocs-color_border)' }}>
+  <video src="/tradingterminal.mp4" autoPlay loop muted playsInline style={{ width: '100%', display: 'block' }} />
+</div>
+
+{/* ── Feature cards ── */}
+
+<div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', margin: '48px 0' }}>
+  <a href="/cli" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>⚡</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>CLI — 38 Commands</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>Market data, trading, transfers, streaming. Tables on TTY, JSON when piped.</div>
+  </a>
+  <a href="/sdk" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>📐</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>Typed SDK</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>30 HTTP endpoints, 13 WebSocket types, 62 response types. All typed Zig structs.</div>
+  </a>
+  <a href="/terminal" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>📈</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>Trading Terminal</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>Candlestick charts, live order book, trade tape. Three-thread architecture.</div>
+  </a>
+  <a href="/cli/agent-integration" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>🤖</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>Agent-Native</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>Structured JSON output, semantic exit codes, dry-run mode. No interactive prompts.</div>
+  </a>
+  <a href="/tui" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>🖥️</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>TUI Framework</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>Double-buffered rendering, constraint layout, scrollable lists. Standalone — no SDK dependency.</div>
+  </a>
+  <a href="/benchmarks" style={{ textDecoration: 'none', color: 'inherit', padding: '24px', borderRadius: '12px', border: '1px solid var(--vocs-color_border)', transition: 'border-color 0.2s' }}>
+    <div style={{ fontSize: '24px', marginBottom: '8px' }}>📦</div>
+    <div style={{ fontWeight: 700, marginBottom: '4px' }}>636 KB Binary</div>
+    <div style={{ fontSize: '14px', opacity: 0.7 }}>Static binary, ~15k lines of Zig source. Builds in ~3 seconds.</div>
+  </a>
+</div>
+
+{/* ── Code example ── */}
+
+<div style={{ textAlign: 'center', marginTop: '64px' }}>
+
+<div style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#f7a41d', marginBottom: '8px' }}>SDK</div>
+
+## Sign & Place an Order
+
+</div>
+
+```zig
+const hlz = @import("hlz");
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
+const types = hlz.hypercore.types;
+const signing = hlz.hypercore.signing;
+
+// Initialize signer from private key
+const signer = try Signer.fromHex("your_64_char_hex_key");
+
+// Build an order — all types are compile-time checked
+const order = types.OrderRequest{
+    .asset = 0,  // BTC
+    .is_buy = true,
+    .limit_px = try Decimal.fromString("50000"),
+    .sz = try Decimal.fromString("0.1"),
+    .reduce_only = false,
+    .order_type = .{ .limit = .{ .tif = .Gtc } },
+    .cloid = types.ZERO_CLOID,
+};
+
+const batch = types.BatchOrder{
+    .orders = &[_]types.OrderRequest{order},
+    .grouping = .na,
+};
+
+// Sign (~34µs, stack only, no heap allocations)
+const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+const sig = try signing.signOrder(signer, batch, nonce, .mainnet, null, null);
+
+// Submit via typed HTTP client
+var client = hlz.hypercore.client.Client.mainnet(allocator);
+defer client.deinit();
+var result = try client.place(signer, batch, nonce, null, null);
+defer result.deinit();
+```
+
+{/* ── CLI example ── */}
+
+<div style={{ textAlign: 'center', marginTop: '64px' }}>
+
+<div style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#f7a41d', marginBottom: '8px' }}>CLI</div>
+
+## Or Just Use the Command Line
+
+</div>
+
+```bash
+# Market data — no auth needed
+hlz price BTC
+hlz book ETH --live
+hlz funding --top 10
+
+# Trade
+hlz buy BTC 0.1 @50000 --tp 55000 --sl 48000
+hlz sell ETH 1.0
+
+# Stream real-time data
+hlz stream trades BTC | jq '.sz'
+
+# Pipe-aware: JSON when piped, tables on TTY
+hlz positions --json | jq '.[] | {coin, pnl}'
+```
+
+{/* ── Numbers ── */}
+
+<div style={{ textAlign: 'center', marginTop: '64px' }}>
+
+<div style={{ fontSize: '13px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#f7a41d', marginBottom: '8px' }}>At a Glance</div>
+
+## Numbers
+
+</div>
+
+<div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', margin: '24px 0', textAlign: 'center' }}>
+  <div style={{ padding: '20px 0' }}>
+    <div style={{ fontSize: '28px', fontWeight: 700, fontFamily: "'Space Grotesk', system-ui", color: '#f7a41d' }}>636 KB</div>
+    <div style={{ fontSize: '13px', opacity: 0.6, marginTop: '4px' }}>hlz binary</div>
+  </div>
+  <div style={{ padding: '20px 0' }}>
+    <div style={{ fontSize: '28px', fontWeight: 700, fontFamily: "'Space Grotesk', system-ui", color: '#f7a41d' }}>38</div>
+    <div style={{ fontSize: '13px', opacity: 0.6, marginTop: '4px' }}>commands</div>
+  </div>
+  <div style={{ padding: '20px 0' }}>
+    <div style={{ fontSize: '28px', fontWeight: 700, fontFamily: "'Space Grotesk', system-ui", color: '#f7a41d' }}>~15k</div>
+    <div style={{ fontSize: '13px', opacity: 0.6, marginTop: '4px' }}>lines of Zig</div>
+  </div>
+</div>
+
+---
+
+<div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '32px', padding: '24px 0' }}>
+  <a href="https://ziglang.org" target="_blank" rel="noopener noreferrer">
+    <img src="/zig-mark.svg" alt="Zig" style={{ height: '36px' }} />
+  </a>
+  <span style={{ fontSize: '16px', color: '#888' }}>×</span>
+  <a href="https://hyperliquid.xyz" target="_blank" rel="noopener noreferrer">
+    <img src="/hl-symbol.svg" alt="Hyperliquid" style={{ height: '36px' }} />
+  </a>
+</div>
+
+<div style={{ textAlign: 'center', fontSize: '14px', color: '#888', paddingBottom: '24px' }}>
+
+Inspired by [hypersdk](https://github.com/infinitefield/hypersdk),
+[hyperliquid-cli](https://github.com/chrisling-dev/hyperliquid-cli),
+and [zabi](https://github.com/Raiden1411/zabi).
+
+</div>
+
+</div>

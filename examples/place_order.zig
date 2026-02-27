@@ -12,12 +12,12 @@
 //!      Use testnet or a very low price for safety.
 
 const std = @import("std");
-const hyperzig = @import("hyperzig");
+const hlz = @import("hlz");
 
-const Signer = hyperzig.crypto.signer.Signer;
-const Decimal = hyperzig.math.decimal.Decimal;
-const types = hyperzig.hypercore.types;
-const Client = hyperzig.hypercore.client.Client;
+const Signer = hlz.crypto.signer.Signer;
+const Decimal = hlz.math.decimal.Decimal;
+const types = hlz.hypercore.types;
+const Client = hlz.hypercore.client.Client;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -75,7 +75,7 @@ pub fn main() !void {
     const nonce: u64 = @intCast(std.time.milliTimestamp());
 
     // Sign the order (zero-alloc, ~50μs)
-    const sig = hyperzig.hypercore.signing.signOrder(
+    const sig = hlz.hypercore.signing.signOrder(
         signer,
         batch,
         nonce,

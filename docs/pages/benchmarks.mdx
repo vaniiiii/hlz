@@ -1,0 +1,35 @@
+---
+title: Benchmarks
+---
+
+# Benchmarks
+
+Measured on Apple M2, median of 1000 iterations. Take these with a grain of salt — different machines, different compilers, different results.
+
+## Signing
+
+| Operation | Time |
+|-----------|------|
+| Sign order | ~34.5 µs |
+| Sign cancel | ~34.1 µs |
+| EIP-712 struct hash | ~250 ns |
+
+## Binary Size
+
+| Component | Size |
+|-----------|------|
+| `hlz` (ReleaseSmall, stripped) | 636 KB |
+| `hlz-terminal` (ReleaseSmall, stripped) | 768 KB |
+| SDK only (no HTTP/TLS) | 116 KB |
+
+## Build Time
+
+Clean build takes ~3 seconds on Apple M2. Zig's compilation model helps here.
+
+## Reproduce
+
+```bash
+git clone https://github.com/hlz/hlz
+cd hlz
+zig build bench
+```
