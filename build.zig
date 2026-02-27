@@ -99,6 +99,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = if (optimize != .Debug) true else null,
+            .unwind_tables = if (optimize != .Debug) .none else null,
             .imports = &.{
                 .{ .name = "hyperzig", .module = hyperzig },
                 .{ .name = "Terminal", .module = tui_terminal },
@@ -112,6 +114,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    if (optimize != .Debug) {
+        hl.link_gc_sections = true;
+    }
     b.installArtifact(hl);
 
     const run_hl = b.addRunArtifact(hl);
@@ -125,6 +130,8 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/cli/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = if (optimize != .Debug) true else null,
+            .unwind_tables = if (optimize != .Debug) .none else null,
             .imports = &.{
                 .{ .name = "hyperzig", .module = hyperzig },
                 .{ .name = "Terminal", .module = tui_terminal },
@@ -138,6 +145,9 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+    if (optimize != .Debug) {
+        hl_trade.link_gc_sections = true;
+    }
     b.installArtifact(hl_trade);
 
     // ── Tests ────────────────────────────────────────────────────────

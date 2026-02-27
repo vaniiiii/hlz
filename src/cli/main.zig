@@ -1,6 +1,7 @@
 //! `hl` — Hyperliquid CLI.
 
 const std = @import("std");
+
 const args_mod = @import("args.zig");
 const config_mod = @import("config.zig");
 const output_mod = @import("output.zig");
