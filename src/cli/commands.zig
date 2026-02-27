@@ -1951,13 +1951,29 @@ fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     else
         upperCoin(a.coin, &coin_upper);
 
+    // Normalize: replace @index with pair name in JSON output
+    const display_coin = upperCoin(a.coin, &coin_upper);
+
     if (w.format == .json) {
         var raw = try client.l2Book(coin);
         defer raw.deinit();
-        // API returns "null" for nonexistent coins
         if (raw.body.len < 10 or std.mem.startsWith(u8, raw.body, "null")) {
             try w.err("no book data for this coin");
             return error.CommandFailed;
+        }
+        // Replace @index coin field with user-facing pair name
+        if (std.mem.indexOf(u8, display_coin, "/") != null) {
+            if (std.mem.indexOf(u8, raw.body, coin)) |idx| {
+                var buf: [8192]u8 = undefined;
+                const prefix = raw.body[0..idx];
+                const suffix = raw.body[idx + coin.len ..];
+                const len = (std.fmt.bufPrint(&buf, "{s}{s}{s}", .{ prefix, display_coin, suffix }) catch {
+                    try w.jsonRaw(raw.body);
+                    return;
+                }).len;
+                try w.jsonRaw(buf[0..len]);
+                return;
+            }
         }
         try w.jsonRaw(raw.body);
         return;

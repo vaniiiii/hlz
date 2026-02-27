@@ -68,7 +68,8 @@ REST thread (500ms loop) — user positions, orders, fills
 
 ### Output & UX
 - Pipe-aware: JSON when piped, tables on TTY
-- `--json` passthrough uses raw body, not re-serialized typed data
+- **Read commands** (price, mids, funding, book, perps, spot, positions, orders, fills, balance, portfolio): normalize output — resolve `@index` to pair names, compute derived fields. The CLI is a UX layer.
+- **Write commands** (buy, sell, cancel, modify, send, leverage, twap, batch): raw API passthrough — users need to verify exactly what the exchange returned.
 - No interactive prompts
 - Exit codes: 0=OK, 1=error, 2=usage, 3=auth, 4=network
 
