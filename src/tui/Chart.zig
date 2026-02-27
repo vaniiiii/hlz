@@ -141,22 +141,45 @@ pub fn render(
         buf.putStr(sx, sep_y, "─", axis_style);
     }
 
-    // X-axis time labels (min 7 cols apart to prevent overlap)
+    // X-axis time labels (adaptive by visible span)
     const time_y = rect.y + total_h;
-    const label_spacing: usize = @max(7, @as(usize, chart_w) / 6);
-    var last_label_x: i32 = -10;
+    const first_ts = slice[0].t;
+    const last_ts = slice[slice.len - 1].t;
+    const span_ms: i64 = if (last_ts >= first_ts) last_ts - first_ts else first_ts - last_ts;
+    const mode = axisLabelMode(span_ms);
+    const label_w: usize = switch (mode) {
+        .intraday => 5,   // HH:mm
+        .day => 6,        // Sep 7
+        .month_year => 8, // Sep 2026
+    };
+    const label_spacing: usize = @max(label_w + 2, @as(usize, chart_w) / 6);
+    var last_label_end: i32 = -100;
+    var prev_lbl: [12]u8 = undefined;
+    var prev_lbl_len: usize = 0;
+
     for (0..visible) |i| {
-        if (i % label_spacing != 0 and i != visible - 1) continue;
-        const x: u16 = rect.x + @as(u16, @intCast(i));
-        // Skip if too close to previous label
-        if (@as(i32, x) - last_label_x < 7) continue;
         const candle = slice[i];
-        var tlbl: [6]u8 = undefined;
-        const ts = formatTime(&tlbl, candle.t);
-        if (x + 5 < rect.x + rect.w) {
-            buf.putStr(x, time_y, ts, label_style);
-            last_label_x = @intCast(x);
-        }
+        const periodic = i % label_spacing == 0;
+        const last = i == visible - 1;
+        const boundary = isBoundaryLabel(candle.t, mode);
+        if (!periodic and !last and !boundary) continue;
+
+        const x: u16 = rect.x + @as(u16, @intCast(i));
+        var tlbl: [12]u8 = undefined;
+        const ts = formatAxisLabel(&tlbl, candle.t, mode);
+        if (ts.len == 0) continue;
+
+        // Suppress repeated labels unless this is an emphasized boundary.
+        if (!boundary and ts.len == prev_lbl_len and std.mem.eql(u8, ts, prev_lbl[0..prev_lbl_len])) continue;
+
+        const end_x: i32 = @as(i32, x) + @as(i32, @intCast(ts.len)) - 1;
+        if (@as(i32, x) <= last_label_end + 1) continue;
+        if (end_x >= @as(i32, rect.x + rect.w)) continue;
+
+        buf.putStr(x, time_y, ts, label_style);
+        last_label_end = end_x;
+        prev_lbl_len = ts.len;
+        @memcpy(prev_lbl[0..ts.len], ts);
     }
 
     // Live price line — dashed line across chart + highlighted label
@@ -296,12 +319,75 @@ fn formatPrice(buf: *[12]u8, price: f64) []const u8 {
     }
 }
 
+const AxisLabelMode = enum { intraday, day, month_year };
+
+fn axisLabelMode(span_ms: i64) AxisLabelMode {
+    const day_ms: i64 = 86_400_000;
+    if (span_ms <= 36 * 3_600_000) return .intraday;
+    if (span_ms <= 365 * day_ms) return .day;
+    return .month_year;
+}
+
+fn isBoundaryLabel(ts_ms: i64, mode: AxisLabelMode) bool {
+    const p = datePartsUtc(ts_ms);
+    return switch (mode) {
+        .intraday => p.hour == 0 and p.minute == 0,
+        .day => p.day == 1 and p.hour == 0,
+        .month_year => p.month == 1 and p.day == 1 and p.hour == 0,
+    };
+}
+
+fn formatAxisLabel(buf: *[12]u8, ts_ms: i64, mode: AxisLabelMode) []const u8 {
+    const p = datePartsUtc(ts_ms);
+    const months = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    const m = months[@as(usize, p.month - 1)];
+    return switch (mode) {
+        .intraday => std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}", .{ p.hour, p.minute }) catch "??:??",
+        .day => std.fmt.bufPrint(buf, "{s} {d}", .{ m, p.day }) catch "",
+        .month_year => std.fmt.bufPrint(buf, "{s} {d}", .{ m, p.year }) catch "",
+    };
+}
+
+const DateParts = struct {
+    year: i32,
+    month: u8,
+    day: u8,
+    hour: u8,
+    minute: u8,
+};
+
+/// UTC date decomposition from Unix milliseconds.
+fn datePartsUtc(ts_ms: i64) DateParts {
+    const sec = @divFloor(ts_ms, 1000);
+    const day = @divFloor(sec, 86_400);
+    const day_s = @mod(sec, 86_400);
+    const hour: u8 = @intCast(@divFloor(day_s, 3600));
+    const minute: u8 = @intCast(@divFloor(@mod(day_s, 3600), 60));
+
+    // Howard Hinnant civil_from_days algorithm (days since 1970-01-01 UTC).
+    const z = day + 719_468;
+    const era = @divFloor(if (z >= 0) z else z - 146_096, 146_097);
+    const doe = z - era * 146_097; // [0, 146096]
+    const yoe = @divFloor(doe - @divFloor(doe, 1_460) + @divFloor(doe, 36_524) - @divFloor(doe, 146_096), 365); // [0, 399]
+    const y = yoe + era * 400;
+    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100)); // [0, 365]
+    const mp = @divFloor(5 * doy + 2, 153); // [0, 11]
+    const d = doy - @divFloor(153 * mp + 2, 5) + 1; // [1, 31]
+    const m: i64 = mp + (if (mp < 10) @as(i64, 3) else @as(i64, -9)); // [1, 12]
+    const year: i32 = @intCast(y + (if (m <= 2) @as(i64, 1) else @as(i64, 0)));
+
+    return .{
+        .year = year,
+        .month = @intCast(m),
+        .day = @intCast(d),
+        .hour = hour,
+        .minute = minute,
+    };
+}
+
 fn formatTime(buf: *[6]u8, ts_ms: i64) []const u8 {
-    const ts_s: u64 = @intCast(@divFloor(ts_ms, 1000));
-    const day_s = ts_s % 86400;
-    const hour = day_s / 3600;
-    const minute = (day_s % 3600) / 60;
-    return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}", .{ hour, minute }) catch "??:??";
+    const p = datePartsUtc(ts_ms);
+    return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}", .{ p.hour, p.minute }) catch "??:??";
 }
 
 // ── Tests ─────────────────────────────────────────────────────────
