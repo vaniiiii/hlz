@@ -2332,7 +2332,7 @@ pub fn stream(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     };
     const act = posix.Sigaction{
         .handler = .{ .handler = S.handler },
-        .mask = @as(posix.sigset_t, 0),
+        .mask = std.mem.zeroes(posix.sigset_t),
         .flags = 0,
     };
     posix.sigaction(posix.SIG.INT, &act, null);
