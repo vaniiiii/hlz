@@ -16,7 +16,9 @@ import { HomePage } from 'vocs/components'
 
 <div className="max-md:-mx-[var(--vocs-content_horizontalPadding,24px)] max-md:[&_[data-v-code-container]]:!rounded-none max-md:[&_pre]:!whitespace-pre-wrap max-md:[&_pre]:!overflow-x-hidden max-md:[&_pre]:!break-all max-md:[&_code]:!block max-md:[&_code]:!whitespace-pre-wrap max-md:[&_code]:!break-all max-md:[&_.line]:!whitespace-pre-wrap max-md:[&_.line]:!break-all">
 ```bash
-curl -fsSL https://hlz.dev/install.sh | sh
+# See https://github.com/vaniiiii/hlz/releases/latest for binaries
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+chmod +x hlz
 ```
 </div>
 
@@ -27,7 +29,7 @@ curl -fsSL https://hlz.dev/install.sh | sh
   <HomePage.Buttons>
     <HomePage.Button href="/introduction/getting-started" variant="accent">Get Started</HomePage.Button>
     <HomePage.Button href="/guides">Guides</HomePage.Button>
-    <HomePage.Button href="https://github.com/hlz/hlz">GitHub</HomePage.Button>
+    <HomePage.Button href="https://github.com/vaniiiii/hlz">GitHub</HomePage.Button>
   </HomePage.Buttons>
 </HomePage.Root>
 

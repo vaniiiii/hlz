@@ -2,24 +2,32 @@
 
 ## Pre-built Binaries
 
+Download from [GitHub Releases](https://github.com/vaniiiii/hlz/releases/latest):
+
 ```bash
-curl -fsSL https://hlz.dev/install.sh | sh
+# macOS (Apple Silicon)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+chmod +x hlz && sudo mv hlz /usr/local/bin/
+
+# macOS (Intel)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-x64
+chmod +x hlz && sudo mv hlz /usr/local/bin/
+
+# Linux (x86_64, static)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
+chmod +x hlz && sudo mv hlz /usr/local/bin/
+
+# Linux (aarch64, static)
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-arm64
+chmod +x hlz && sudo mv hlz /usr/local/bin/
 ```
-
-This downloads the latest release for your platform and installs:
-- `hlz` — CLI tool (636KB)
-- `hlz-terminal` — Trading terminal (768KB)
-
-Supported platforms:
-- macOS (Apple Silicon, Intel)
-- Linux (x86_64, aarch64)
 
 ## Build from Source
 
 Requires [Zig 0.15.2](https://ziglang.org/download/).
 
 ```bash
-git clone https://github.com/hlz/hlz
+git clone https://github.com/vaniiiii/hlz
 cd hlz
 
 # Debug build (fast compile, larger binary)
@@ -41,7 +49,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/hlz/hlz#main",
+        .url = "git+https://github.com/vaniiiii/hlz#main",
     },
 },
 ```
@@ -66,9 +74,10 @@ hlz price BTC     # Should show current BTC price
 ## Updating
 
 ```bash
-# Pre-built binary
-curl -fsSL https://hlz.dev/install.sh | sh
+# Download latest release
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+chmod +x hlz && sudo mv hlz /usr/local/bin/
 
-# From source
+# Or from source
 git pull && zig build -Doptimize=ReleaseSmall
 ```

@@ -9,13 +9,15 @@ hlz gives you three things:
 ## Install the CLI
 
 ```bash
-curl -fsSL https://hlz.dev/install.sh | sh
+# See https://github.com/vaniiiii/hlz/releases/latest for binaries
+curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+chmod +x hlz
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/hlz/hlz
+git clone https://github.com/vaniiiii/hlz
 cd hlz
 zig build -Doptimize=ReleaseSmall
 # Binary at zig-out/bin/hlz
@@ -74,7 +76,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/hlz/hlz#main",
+        .url = "git+https://github.com/vaniiiii/hlz#main",
     },
 },
 ```
