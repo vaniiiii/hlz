@@ -674,6 +674,12 @@ pub const Client = struct {
         );
     }
 
+    pub fn getTokenDetails(self: *Client, token_id: []const u8) !Parsed(R.TokenDetails) {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, "{{\"type\":\"tokenDetails\",\"tokenId\":\"{s}\"}}", .{token_id}) catch return error.Overflow;
+        return self.infoTyped(R.TokenDetails, body);
+    }
+
     pub fn getRecentTrades(self: *Client, coin: []const u8) !Parsed([]R.Trade) {
         var buf: [256]u8 = undefined;
         const body = std.fmt.bufPrint(&buf, "{{\"type\":\"recentTrades\",\"coin\":\"{s}\"}}", .{coin}) catch return error.Overflow;

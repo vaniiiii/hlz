@@ -325,13 +325,12 @@ pub const Referral = struct {
 pub const SpotToken = struct {
     name: []const u8 = "",
     index: u32 = 0,
+    tokenId: []const u8 = "",
     szDecimals: u32 = 0,
     weiDecimals: u32 = 0,
     isCanonical: ?bool = null,
     evmContract: ?std.json.Value = null,
     fullName: ?[]const u8 = null,
-
-
 };
 
 pub const SpotMeta = struct {
@@ -344,6 +343,24 @@ pub const SpotPair = struct {
     tokens: [2]u32 = .{ 0, 0 },
     index: u32 = 0,
     isCanonical: ?bool = null,
+};
+
+pub const TokenDetails = struct {
+    name: []const u8 = "",
+    szDecimals: u32 = 0,
+    weiDecimals: u32 = 0,
+    midPx: ?[]const u8 = null,
+    markPx: ?[]const u8 = null,
+    prevDayPx: ?[]const u8 = null,
+    maxSupply: ?[]const u8 = null,
+    totalSupply: ?[]const u8 = null,
+    circulatingSupply: ?[]const u8 = null,
+    deployer: ?[]const u8 = null,
+    deployTime: ?[]const u8 = null,
+    deployGas: ?[]const u8 = null,
+    seededUsdc: ?[]const u8 = null,
+    fullName: ?[]const u8 = null,
+    futureEmissions: ?[]const u8 = null,
 };
 
 pub const Dex = struct {
