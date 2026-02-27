@@ -97,10 +97,6 @@ pub const MarginSummary = struct {
         return self.accountValue.subtract(self.totalMarginUsed);
     }
 
-    /// Compat: parse from std.json.Value. Prefer typed client methods.
-    pub fn fromJson(obj: std.json.Value) ?MarginSummary {
-        return fromJsonCompat(MarginSummary, obj);
-    }
 };
 
 pub const Leverage = struct {
@@ -131,10 +127,7 @@ pub const AssetPosition = struct {
     type: []const u8 = "oneWay",
     position: PositionData = .{},
 
-    /// Compat: parse from std.json.Value. Prefer typed client methods.
-    pub fn fromJson(obj: std.json.Value) ?AssetPosition {
-        return fromJsonCompat(AssetPosition, obj);
-    }
+
 };
 
 pub const ClearinghouseState = struct {
@@ -153,7 +146,7 @@ pub const UserBalance = struct {
     total: Decimal = Decimal.ZERO,
     entryNtl: ?Decimal = null,
 
-    pub fn fromJson(obj: std.json.Value) ?UserBalance { return fromJsonCompat(UserBalance, obj); }
+
 };
 
 pub const SpotClearinghouseState = struct {
@@ -178,7 +171,7 @@ pub const Fill = struct {
     cloid: ?[]const u8 = null,
     twapId: ?u64 = null,
 
-    pub fn fromJson(obj: std.json.Value) ?Fill { return fromJsonCompat(Fill, obj); }
+
 };
 
 pub const BasicOrder = struct {
@@ -282,6 +275,9 @@ pub const ActiveAssetData = struct {
     user: []const u8 = "",
     coin: []const u8 = "",
     leverage: ?UserLeverage = null,
+    markPx: ?Decimal = null,
+    maxTradeSzs: ?[2]Decimal = null,
+    availableToTrade: ?[2]Decimal = null,
 };
 
 pub const AssetContext = struct {
@@ -301,17 +297,29 @@ pub const PerpMeta = struct {
     szDecimals: u32 = 0,
     maxLeverage: u32 = 1,
     onlyIsolated: bool = false,
-
-    pub fn fromJson(obj: std.json.Value) ?PerpMeta { return fromJsonCompat(PerpMeta, obj); }
+    isDelisted: bool = false,
 };
 
 pub const PerpUniverse = struct {
     universe: []PerpMeta = &.{},
 };
 
-pub const MetaAndAssetCtxs = struct {
-    // This is returned as a JSON array [meta, assetCtxs]
-    // Needs manual parsing — see client.zig
+/// Parsed result of metaAndAssetCtxs — zips universe names with asset contexts.
+pub const MetaAndAssetCtx = struct {
+    meta: PerpMeta,
+    ctx: AssetContext,
+};
+
+pub const Referral = struct {
+    referredBy: ?[]const u8 = null,
+    cumVlm: ?Decimal = null,
+    unclaimedRewards: ?Decimal = null,
+    claimedRewards: ?Decimal = null,
+    referrerState: ?struct {
+        data: ?struct {
+            referralCode: ?[]const u8 = null,
+        } = null,
+    } = null,
 };
 
 pub const SpotToken = struct {
@@ -323,7 +331,7 @@ pub const SpotToken = struct {
     evmContract: ?std.json.Value = null,
     fullName: ?[]const u8 = null,
 
-    pub fn fromJson(obj: std.json.Value) ?SpotToken { return fromJsonCompat(SpotToken, obj); }
+
 };
 
 pub const SpotMeta = struct {
@@ -341,6 +349,13 @@ pub const SpotPair = struct {
 pub const Dex = struct {
     name: []const u8 = "",
     index: u32 = 0,
+};
+
+pub const DexInfo = struct {
+    name: []const u8 = "",
+    fullName: ?[]const u8 = null,
+    deployer: ?[]const u8 = null,
+    assetToStreamingOiCap: ?[]const std.json.Value = null,
 };
 
 pub const ApiAgent = struct {
@@ -430,14 +445,7 @@ pub const Liquidation = struct {
     liquidated_account_value: ?Decimal = null,
 };
 
-// ── Compat: fromJson wrappers (to be removed as callers migrate) ──
 
-fn fromJsonCompat(comptime T: type, obj: std.json.Value) ?T {
-    const parsed = std.json.parseFromValue(T, std.heap.page_allocator, obj, ParseOpts) catch return null;
-    // NOTE: leaks arena — acceptable for CLI commands that exit after printing.
-    // Proper code should use typed client methods instead.
-    return parsed.value;
-}
 
 // ── Nonce Handler ─────────────────────────────────────────────
 
