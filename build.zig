@@ -118,6 +118,7 @@ pub fn build(b: *std.Build) void {
         hl.link_gc_sections = true;
     }
     b.installArtifact(hl);
+    b.step("hlz", "Build hlz CLI only").dependOn(&hl.step);
 
     const run_hl = b.addRunArtifact(hl);
     if (b.args) |args| run_hl.addArgs(args);
@@ -149,6 +150,7 @@ pub fn build(b: *std.Build) void {
         hl_trade.link_gc_sections = true;
     }
     b.installArtifact(hl_trade);
+    b.step("hlz-terminal", "Build hlz-terminal only").dependOn(&hl_trade.step);
 
     // ── Tests ────────────────────────────────────────────────────────
     const test_step = b.step("test", "Run all tests");

@@ -9,6 +9,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -30,7 +31,10 @@ jobs:
         with:
           version: 0.15.2
       - name: Build hlz
-        run: zig build -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+        run: zig build hlz -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
+      - name: Build hlz-terminal
+        continue-on-error: true
+        run: zig build hlz-terminal -Doptimize=ReleaseSmall -Dtarget=${{ matrix.target }}
       - name: Package
         run: |
           mkdir -p dist
