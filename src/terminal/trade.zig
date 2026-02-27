@@ -1,13 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const hyperzig = @import("hyperzig");
-const client_mod = hyperzig.hypercore.client;
-const ws_types = hyperzig.hypercore.ws;
-const signing = hyperzig.hypercore.signing;
-const response = hyperzig.hypercore.response;
+const hlz = @import("hlz");
+const client_mod = hlz.hypercore.client;
+const ws_types = hlz.hypercore.ws;
+const signing = hlz.hypercore.signing;
+const response = hlz.hypercore.response;
 const resp_types = response;
-const Decimal = hyperzig.math.decimal.Decimal;
-const signer_mod = hyperzig.crypto.signer;
+const Decimal = hlz.math.decimal.Decimal;
+const signer_mod = hlz.crypto.signer;
 const App = @import("App");
 const BufMod = @import("Buffer");
 const Chart = @import("Chart");
@@ -724,8 +724,7 @@ const Input = struct {
             },
             .backspace => o.backspaceActive(),
             .enter => {
-                const ai = blk: { shared.mu.lock(); defer shared.mu.unlock(); break :blk shared.asset_index; };
-                Orders.execute(o, client, ui.coin[0..ui.coin_len], config, ai);
+                Orders.execute(o, client, config, shared);
             },
             .tab => {
                 if (o.order_type == .limit and o.field == .size) o.field = .price
@@ -1485,8 +1484,11 @@ const Render = struct {
 // ╚══════════════════════════════════════════════════════════════════╝
 
 const Orders = struct {
-    const zig = @import("hyperzig");
+    const zig = @import("hlz");
     const types = zig.hypercore.types;
+    // Market order slippage cap: 3% from BBO (matches Hyperliquid TWAP convention)
+    const SLIPPAGE_BUY = Decimal.fromString("1.03") catch unreachable;
+    const SLIPPAGE_SELL = Decimal.fromString("0.97") catch unreachable;
 
     fn makeCloid(seed: u64) types.Cloid {
         var cloid = types.ZERO_CLOID;
@@ -1502,10 +1504,10 @@ const Orders = struct {
         return cloid;
     }
 
-    fn execute(order: *OrderState, client: *Client, coin: []const u8, config: *const Config, asset_index: ?usize) void {
-        _ = coin;
+    fn execute(order: *OrderState, client: *Client, config: *const Config, shared: *Shared) void {
         const signer = config.getSigner() catch { order.setStatus("No key configured", true); return; };
-        const asset: u32 = @intCast(asset_index orelse { order.setStatus("Asset not resolved", true); return; });
+        const snap = Snapshot.take(shared);
+        const asset: u32 = @intCast(snap.asset_index orelse { order.setStatus("Asset not resolved", true); return; });
         const sz_str = order.sizeStr();
         if (sz_str.len == 0) { order.setStatus("Enter size first", true); return; }
         const sz = std.fmt.parseFloat(f64, sz_str) catch { order.setStatus("Invalid size", true); return; };
@@ -1514,9 +1516,15 @@ const Orders = struct {
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const tif: types.TimeInForce = if (order.order_type == .market) .FrontendMarket else .Gtc;
         const sz_dec = Decimal.fromString(sz_str) catch { order.setStatus("Invalid size format", true); return; };
-        const px_dec = if (order.order_type == .market)
-            (if (order.side == .buy) Decimal.fromString("999999") catch unreachable else Decimal.fromString("1") catch unreachable)
-        else blk: {
+        const px_dec = if (order.order_type == .market) blk: {
+            const bbo_str = if (order.side == .buy and snap.n_asks > 0)
+                snap.asks[0].px()
+            else if (order.side == .sell and snap.n_bids > 0)
+                snap.bids[0].px()
+            else { order.setStatus("No book data for market price", true); return; };
+            const bbo_px = Decimal.fromString(bbo_str) catch { order.setStatus("Invalid book price", true); return; };
+            break :blk bbo_px.mul(if (order.side == .buy) SLIPPAGE_BUY else SLIPPAGE_SELL);
+        } else blk: {
             const p = order.priceStr();
             if (p.len == 0) { order.setStatus("Enter price first", true); return; }
             break :blk Decimal.fromString(p) catch { order.setStatus("Invalid price format", true); return; };
@@ -1614,11 +1622,21 @@ const Orders = struct {
         const side_str = snap.positions.get(ui.selected_row, 1); // Side column
         if (sz_str.len == 0) { ui.order.setStatus("Invalid position", true); return; }
 
-        const asset: u32 = blk: { shared.mu.lock(); defer shared.mu.unlock(); break :blk @intCast(shared.asset_index orelse { ui.order.setStatus("Asset not resolved", true); return; }); };
+        const asset: u32 = @intCast(snap.asset_index orelse { ui.order.setStatus("Asset not resolved", true); return; });
         const sz_dec = Decimal.fromString(sz_str) catch { ui.order.setStatus("Invalid size", true); return; };
-        // Close = opposite side, reduce_only, market
         const is_long = std.mem.eql(u8, side_str, "LONG");
-        const px_dec = if (is_long) Decimal.fromString("1") catch unreachable else Decimal.fromString("999999") catch unreachable;
+        const px_dec: Decimal = blk: {
+            const bbo_str = if (is_long and snap.n_bids > 0)
+                snap.bids[0].px()
+            else if (!is_long and snap.n_asks > 0)
+                snap.asks[0].px()
+            else {
+                ui.order.setStatus("No book data for slippage price", true);
+                return;
+            };
+            const bbo_px = Decimal.fromString(bbo_str) catch { ui.order.setStatus("Invalid book price", true); return; };
+            break :blk bbo_px.mul(if (is_long) SLIPPAGE_SELL else SLIPPAGE_BUY);
+        };
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const ord = types.OrderRequest{ .asset = asset, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
