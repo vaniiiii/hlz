@@ -2,7 +2,6 @@
 set -e
 
 REPO="vaniiiii/hlz"
-INSTALL_DIR="/usr/local/bin"
 
 # Detect OS
 OS=$(uname -s)
@@ -27,11 +26,21 @@ echo "Installing hlz (${os}/${arch})..."
 curl -fsSL -o hlz "$URL"
 chmod +x hlz
 
-if [ -w "$INSTALL_DIR" ]; then
-  mv hlz "$INSTALL_DIR/hlz"
+# Try /usr/local/bin first, fall back to ~/.local/bin
+if [ -w "/usr/local/bin" ]; then
+  mv hlz /usr/local/bin/hlz
+  echo "Installed to /usr/local/bin/hlz"
+elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  sudo mv hlz /usr/local/bin/hlz
+  echo "Installed to /usr/local/bin/hlz"
 else
-  sudo mv hlz "$INSTALL_DIR/hlz"
+  mkdir -p "$HOME/.local/bin"
+  mv hlz "$HOME/.local/bin/hlz"
+  echo "Installed to $HOME/.local/bin/hlz"
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) ;;
+    *) echo "Add to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;;
+  esac
 fi
 
-echo "hlz installed to ${INSTALL_DIR}/hlz"
 hlz version
