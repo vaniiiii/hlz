@@ -392,21 +392,37 @@ pub fn mids(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     const val = try result.json();
     if (val != .object) return;
 
-    // Resolve @index → human-readable spot names
+    // Resolve @index → human-readable spot pair names via universe + tokens
     var spot_names: [512][48]u8 = undefined;
     var spot_count: usize = 0;
     if (hasAtKeys(val)) {
         var spot_result = client.getSpotMeta() catch null;
         defer if (spot_result) |*sr| sr.deinit();
         if (spot_result) |sr| {
-            for (sr.value.tokens, 0..) |t, i| {
+            const tokens = sr.value.tokens;
+            for (sr.value.universe, 0..) |pair, i| {
                 if (i >= 512) break;
-                const max_name = 48 - "/USDC".len - 1; // room for suffix + null
-                const name_len = @min(t.name.len, max_name);
-                @memcpy(spot_names[i][0..name_len], t.name[0..name_len]);
-                const suffix = "/USDC";
-                @memcpy(spot_names[i][name_len .. name_len + suffix.len], suffix);
-                spot_names[i][name_len + suffix.len] = 0;
+                // Use pair.name if canonical, else build from token names
+                const name_src = if (pair.name.len > 0 and pair.name[0] != '@')
+                    pair.name
+                else blk: {
+                    // Build "BASE/QUOTE" from token indices
+                    if (pair.tokens[0] >= tokens.len or pair.tokens[1] >= tokens.len) break :blk pair.name;
+                    const base = tokens[pair.tokens[0]].name;
+                    const quote = tokens[pair.tokens[1]].name;
+                    const total_len = base.len + 1 + quote.len;
+                    if (total_len >= 47) break :blk pair.name;
+                    @memcpy(spot_names[i][0..base.len], base);
+                    spot_names[i][base.len] = '/';
+                    @memcpy(spot_names[i][base.len + 1 .. base.len + 1 + quote.len], quote);
+                    spot_names[i][total_len] = 0;
+                    break :blk spot_names[i][0..total_len];
+                };
+                if (name_src.ptr != &spot_names[i]) {
+                    const len = @min(name_src.len, 47);
+                    @memcpy(spot_names[i][0..len], name_src[0..len]);
+                    spot_names[i][len] = 0;
+                }
                 spot_count = i + 1;
             }
         }
