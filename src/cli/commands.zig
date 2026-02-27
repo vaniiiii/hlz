@@ -148,7 +148,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
                 try w.print("  address: {s}\n  path:    ~/.hl/keys/{s}.json\n", .{ addr_buf, name });
                 try w.nl();
                 try w.styled(Style.muted, "  To use as API wallet, approve on your main account:\n");
-                try w.print("    hl approve-agent {s}\n", .{addr_buf});
+                try w.print("    hlz approve-agent {s}\n", .{addr_buf});
                 try w.styled(Style.muted, "  Or approve via web UI:\n");
                 try w.print("    https://app.hyperliquid.xyz/API\n", .{});
             }

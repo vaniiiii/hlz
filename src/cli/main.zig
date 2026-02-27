@@ -140,7 +140,7 @@ fn printVersion(w: *output_mod.Writer) !void {
     if (w.format == .json) {
         try w.jsonRaw("{\"version\":\"" ++ VERSION ++ "\"}");
     } else {
-        try w.print("hl {s}\n", .{VERSION});
+        try w.print("hlz {s}\n", .{VERSION});
     }
 }
 
@@ -154,7 +154,7 @@ fn printHelp(w: *output_mod.Writer) !void {
     );
     try w.print("  Hyperliquid CLI v{s}\n\n", .{VERSION});
     try w.styled(Style.bold_white, "USAGE\n");
-    try w.print("  hl <command> [args] [flags]\n\n", .{});
+    try w.print("  hlz <command> [args] [flags]\n\n", .{});
 
     try w.styled(Style.bold_white, "MARKET DATA\n");
     try w.print(
@@ -290,13 +290,13 @@ fn printHelp(w: *output_mod.Writer) !void {
 
     try w.styled(Style.bold_white, "EXAMPLES\n");
     try w.print(
-        \\  hl price BTC                           Current BTC price
-        \\  hl positions --json                     Positions as JSON
-        \\  hl buy BTC 0.1 @95000 --dry-run         Preview order
-        \\  hl buy ETH 1.0 @3400 --tp 3600 --sl 3200  Bracket order
-        \\  hl cancel ETH                           Cancel all ETH orders
-        \\  hl stream trades BTC                    Real-time BTC trades
-        \\  hl mids --json | jq .BTC                Pipe mid price
+        \\  hlz price BTC                           Current BTC price
+        \\  hlz positions --json                     Positions as JSON
+        \\  hlz buy BTC 0.1 @95000 --dry-run         Preview order
+        \\  hlz buy ETH 1.0 @3400 --tp 3600 --sl 3200  Bracket order
+        \\  hlz cancel ETH                           Cancel all ETH orders
+        \\  hlz stream trades BTC                    Real-time BTC trades
+        \\  hlz mids --json | jq .BTC                Pipe mid price
         \\  HL_OUTPUT=json hl positions              Agent-friendly default
         \\  echo '["buy BTC 0.1 @95000"]' | hl batch --stdin  Pipe orders
         \\
