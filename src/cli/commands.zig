@@ -1911,12 +1911,48 @@ pub fn book(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     return bookStatic(allocator, w, config, a);
 }
 
+// Resolve "UETH/USDC" → "@151" for spot API calls.
+// Some canonical pairs (e.g. PURR/USDC) work with the name directly,
+// but non-canonical ones need @index. We always try @index first.
+// Returns @index string in buf, or null if pair not found in spotMeta.
+fn resolveSpotIndex(allocator: std.mem.Allocator, config: Config, pair: []const u8, buf: *[16]u8) ?[]const u8 {
+    const slash = std.mem.indexOf(u8, pair, "/") orelse return null;
+    const base = pair[0..slash];
+    const quote = pair[slash + 1 ..];
+    var client = makeClient(allocator, config);
+    defer client.deinit();
+    var sm = client.getSpotMeta() catch return null;
+    defer sm.deinit();
+    for (sm.value.universe) |u| {
+        if (u.tokens[0] >= sm.value.tokens.len or u.tokens[1] >= sm.value.tokens.len) continue;
+        if (std.ascii.eqlIgnoreCase(sm.value.tokens[u.tokens[0]].name, base) and
+            std.ascii.eqlIgnoreCase(sm.value.tokens[u.tokens[1]].name, quote))
+        {
+            return std.fmt.bufPrint(buf, "@{d}", .{u.index}) catch return null;
+        }
+    }
+    return null;
+}
+
+// Resolve spot coin for APIs that accept both @index and pair names.
+// Most pairs need @index (e.g. @151 for UETH/USDC). Canonical pairs
+// like PURR/USDC (index 0) only work with the pair name directly.
+fn resolveSpotCoin(allocator: std.mem.Allocator, config: Config, pair: []const u8, buf: *[16]u8) []const u8 {
+    const idx = resolveSpotIndex(allocator, config, pair, buf) orelse return pair;
+    if (std.mem.eql(u8, idx, "@0")) return pair;
+    return idx;
+}
+
 fn bookStatic(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.BookArgs) !void {
     var client = makeClient(allocator, config);
     defer client.deinit();
 
     var coin_upper: [16]u8 = undefined;
-    const coin = upperCoin(a.coin, &coin_upper);
+    var spot_idx_buf: [16]u8 = undefined;
+    const coin = if (std.mem.indexOf(u8, a.coin, "/") != null)
+        resolveSpotCoin(allocator, config, upperCoin(a.coin, &coin_upper), &spot_idx_buf)
+    else
+        upperCoin(a.coin, &coin_upper);
 
     if (w.format == .json) {
         var raw = try client.l2Book(coin);
@@ -2159,7 +2195,11 @@ fn lpad(buf: []u8, pos: usize, text: []const u8, width: usize) usize {
 fn bookLive(allocator: std.mem.Allocator, config: Config, a: args_mod.BookArgs) !void {
 
     var coin_upper: [16]u8 = undefined;
-    const coin = upperCoin(a.coin, &coin_upper);
+    var spot_idx_buf: [16]u8 = undefined;
+    const coin = if (std.mem.indexOf(u8, a.coin, "/") != null)
+        resolveSpotCoin(allocator, config, upperCoin(a.coin, &coin_upper), &spot_idx_buf)
+    else
+        upperCoin(a.coin, &coin_upper);
 
     var client = makeClient(allocator, config);
     defer client.deinit();
@@ -2390,13 +2430,21 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
 }
 
 pub fn stream(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.StreamArgs) !void {
-    _ = allocator;
+    // Resolve spot pair names (e.g. "UETH/USDC" → "@151") for WS subscriptions
+    var spot_idx_buf: [16]u8 = undefined;
+    var coin_upper_buf: [16]u8 = undefined;
+    const resolved_coin: ?[]const u8 = if (a.coin) |c| blk: {
+        if (std.mem.indexOf(u8, c, "/") != null) {
+            break :blk resolveSpotCoin(allocator, config, upperCoin(c, &coin_upper_buf), &spot_idx_buf);
+        }
+        break :blk c;
+    } else null;
 
     const sub: ws_types.Subscription = switch (a.kind) {
-        .trades => .{ .trades = .{ .coin = a.coin orelse return error.MissingArgument } },
-        .bbo => .{ .bbo = .{ .coin = a.coin orelse return error.MissingArgument } },
-        .book => .{ .l2Book = .{ .coin = a.coin orelse return error.MissingArgument } },
-        .candles => .{ .candle = .{ .coin = a.coin orelse return error.MissingArgument, .interval = a.interval } },
+        .trades => .{ .trades = .{ .coin = resolved_coin orelse return error.MissingArgument } },
+        .bbo => .{ .bbo = .{ .coin = resolved_coin orelse return error.MissingArgument } },
+        .book => .{ .l2Book = .{ .coin = resolved_coin orelse return error.MissingArgument } },
+        .candles => .{ .candle = .{ .coin = resolved_coin orelse return error.MissingArgument, .interval = a.interval } },
         .mids => .{ .allMids = .{ .dex = null } },
         .fills => .{ .userFills = .{ .user = a.address orelse config.getAddress() orelse return error.MissingAddress } },
         .orders => .{ .orderUpdates = .{ .user = a.address orelse config.getAddress() orelse return error.MissingAddress } },
