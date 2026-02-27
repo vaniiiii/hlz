@@ -81,6 +81,8 @@ const FocusPanel = enum(u3) { chart, book, tape, order_entry, bottom };
 const OrderSide = enum { buy, sell };
 const OrderType = enum { market, limit };
 const OrderField = enum { size, price };
+const ActionId = enum(u8) { set_leverage, cancel_all, close_selected };
+const ActionMode = enum(u2) { list, confirm, number };
 const LEVERAGE_MIN: u32 = 1;
 const LEVERAGE_MAX: u32 = 125;
 
@@ -210,17 +212,32 @@ const LeverageState = struct {
     open: bool = false,
     value: u32 = 20,
     is_cross: bool = true,
+    return_to_actions: bool = false,
+    max: u32 = LEVERAGE_MAX,
 
-    fn clamp(v: u32) u32 {
-        return @max(LEVERAGE_MIN, @min(v, LEVERAGE_MAX));
+    fn clamp(v: u32, max: u32) u32 {
+        return @max(LEVERAGE_MIN, @min(v, @max(LEVERAGE_MIN, max)));
     }
 
     fn step(self: *LeverageState, delta: i32) void {
         const now: i32 = @intCast(self.value);
         const next: i32 = now + delta;
         if (next <= 0) self.value = LEVERAGE_MIN
-        else self.value = clamp(@intCast(next));
+        else self.value = clamp(@intCast(next), self.max);
     }
+};
+
+const ActionUiState = struct {
+    open: bool = false,
+    mode: ActionMode = .list,
+    selected: usize = 0,
+    current: ActionId = .set_leverage,
+    number_value: i32 = 20,
+    number_min: i32 = 1,
+    number_max: i32 = 125,
+    number_step: i32 = 1,
+    number_step_large: i32 = 5,
+    number_is_cross: bool = true,
 };
 
 /// UI-only state (never touched by worker threads)
@@ -239,6 +256,7 @@ const UiState = struct {
     selected_row: usize = 0,
     scroll_offset: usize = 0,
     leverage: LeverageState = .{},
+    actions: ActionUiState = .{},
     show_perf: bool = false,
     rss_kb: u64 = 0,
     peak_rss_kb: u64 = 0,
@@ -276,6 +294,7 @@ const Shared = struct {
     leverage_buf: [8]u8 = undefined,
     leverage_len: usize = 0,
     leverage_is_cross: bool = true,
+    max_leverage: u32 = LEVERAGE_MAX,
     // Asset resolution
     asset_index: ?usize = null,
     // Config (UI writes, workers read)
@@ -296,6 +315,7 @@ const Shared = struct {
         @memcpy(self.coin_buf[0..n], c[0..n]);
         self.coin_len = n;
         self.coin_gen += 1;
+        self.max_leverage = LEVERAGE_MAX;
         self.candle_count = 0;
         self.n_bids = 0;
         self.n_asks = 0;
@@ -370,6 +390,7 @@ const Snapshot = struct {
     leverage_buf: [8]u8,
     leverage_len: usize,
     leverage_is_cross: bool,
+    max_leverage: u32,
     asset_index: ?usize,
 
     fn take(s: *Shared) Snapshot {
@@ -389,6 +410,7 @@ const Snapshot = struct {
             .avail_buf = s.avail_buf, .avail_len = s.avail_len,
             .leverage_buf = s.leverage_buf, .leverage_len = s.leverage_len,
             .leverage_is_cross = s.leverage_is_cross,
+            .max_leverage = s.max_leverage,
             .asset_index = s.asset_index,
         };
     }
@@ -634,8 +656,10 @@ const RestWorker = struct {
 
 const Input = struct {
     const intervals = [_][]const u8{ "1m", "5m", "15m", "1h", "4h", "1d" };
+    const action_items = [_]ActionId{.set_leverage};
 
     fn handleKey(key: @import("Terminal").Key, ui: *UiState, running: *bool, client: *Client, config: *const Config, shared: *Shared) void {
+        if (ui.actions.open) return handleActionKey(key, ui, client, config, shared);
         if (ui.leverage.open) return handleLeverageKey(key, ui, client, config, shared);
         if (ui.focus == .order_entry) return handleOrderKey(key, ui, client, config, shared);
         switch (key) {
@@ -667,7 +691,7 @@ const Input = struct {
                     if (ui.tab == .open_orders) Orders.cancelOrder(ui, client, config, shared)
                     else if (ui.tab == .positions) Orders.closePosition(ui, client, config, shared);
                 },
-                'v', 'V' => openLeverageModal(ui, shared),
+                'v', 'V' => openActionModal(ui),
                 'd', 'D' => ui.show_perf = !ui.show_perf,
                 'r', 'R' => if (ui.focus == .order_entry) { ui.order = OrderState{}; ui.order.setStatus("Reset", false); },
                 else => {},
@@ -692,6 +716,7 @@ const Input = struct {
                 's', 'S' => o.side = .sell,
                 'm', 'M' => { o.order_type = if (o.order_type == .market) .limit else .market; if (o.order_type == .limit) o.field = .size; },
                 'L' => openLeverageModal(ui, shared),
+                'v', 'V' => openActionModal(ui),
                 'd', 'D' => ui.show_perf = !ui.show_perf,
                 'q' => { ui.focus = .chart; },
                 'r', 'R' => { o.* = OrderState{}; o.setStatus("Reset", false); },
@@ -712,10 +737,140 @@ const Input = struct {
         }
     }
 
+    fn openActionModal(ui: *UiState) void {
+        ui.actions.open = true;
+        ui.actions.mode = .list;
+        ui.actions.selected = 0;
+    }
+
+    fn handleActionKey(key: @import("Terminal").Key, ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
+        switch (ui.actions.mode) {
+            .list => switch (key) {
+                .char => |c| switch (c) {
+                    'q', 'Q', 'v', 'V' => ui.actions.open = false,
+                    'j' => ui.actions.selected = @min(ui.actions.selected + 1, action_items.len - 1),
+                    'k' => ui.actions.selected -|= 1,
+                    else => {},
+                },
+                .up => ui.actions.selected -|= 1,
+                .down => ui.actions.selected = @min(ui.actions.selected + 1, action_items.len - 1),
+                .enter => openActionForm(ui, shared),
+                .esc => ui.actions.open = false,
+                else => {},
+            },
+            .confirm => switch (key) {
+                .char => |c| switch (c) {
+                    'q', 'Q' => ui.actions.mode = .list,
+                    else => {},
+                },
+                .enter => executeAction(ui, client, config, shared),
+                .esc => ui.actions.mode = .list,
+                else => {},
+            },
+            .number => switch (key) {
+                .char => |c| switch (c) {
+                    'q', 'Q' => ui.actions.mode = .list,
+                    'h' => actionStep(ui, -ui.actions.number_step),
+                    'l' => actionStep(ui, ui.actions.number_step),
+                    'H' => actionStep(ui, -ui.actions.number_step_large),
+                    'L' => actionStep(ui, ui.actions.number_step_large),
+                    'c', 'C', 'm', 'M' => ui.actions.number_is_cross = !ui.actions.number_is_cross,
+                    else => {},
+                },
+                .left => actionStep(ui, -ui.actions.number_step),
+                .right => actionStep(ui, ui.actions.number_step),
+                .down => actionStep(ui, -ui.actions.number_step_large),
+                .up => actionStep(ui, ui.actions.number_step_large),
+                .enter => executeAction(ui, client, config, shared),
+                .esc => ui.actions.mode = .list,
+                else => {},
+            },
+        }
+    }
+
+    fn openActionForm(ui: *UiState, shared: *Shared) void {
+        const id = action_items[ui.actions.selected];
+        if (!actionEnabled(id, ui, shared)) {
+            ui.order.setStatus(actionDisabledReason(id), true);
+            ui.actions.open = false;
+            return;
+        }
+        ui.actions.current = id;
+        switch (id) {
+            .set_leverage => {
+                ui.actions.open = false;
+                ui.actions.mode = .list;
+                ui.leverage.return_to_actions = true;
+                openLeverageModal(ui, shared);
+                return;
+            },
+            .cancel_all, .close_selected => ui.actions.mode = .confirm,
+        }
+    }
+
+    fn executeAction(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
+        switch (ui.actions.current) {
+            .set_leverage => {
+                ui.leverage.value = LeverageState.clamp(@intCast(@max(1, ui.actions.number_value)), ui.leverage.max);
+                ui.leverage.is_cross = ui.actions.number_is_cross;
+                Orders.updateLeverage(ui, client, config, shared);
+            },
+            .cancel_all => Orders.cancelAll(ui, client, config, shared),
+            .close_selected => Orders.closePosition(ui, client, config, shared),
+        }
+        ui.actions.open = false;
+        ui.actions.mode = .list;
+    }
+
+    fn actionStep(ui: *UiState, delta: i32) void {
+        const next = ui.actions.number_value + delta;
+        ui.actions.number_value = @max(ui.actions.number_min, @min(ui.actions.number_max, next));
+    }
+
+    fn actionEnabled(id: ActionId, ui: *const UiState, shared: *Shared) bool {
+        const snap = Snapshot.take(shared);
+        return switch (id) {
+            .set_leverage => snap.asset_index != null,
+            .cancel_all => countCoinOpenOrders(&snap, ui.coin[0..ui.coin_len]) > 0,
+            .close_selected => snap.positions.n_rows > 0,
+        };
+    }
+
+    fn actionDisabledReason(id: ActionId) []const u8 {
+        return switch (id) {
+            .set_leverage => "Asset not resolved",
+            .cancel_all => "No open orders for coin",
+            .close_selected => "No open positions",
+        };
+    }
+
+    fn actionTitle(id: ActionId) []const u8 {
+        return switch (id) {
+            .set_leverage => "Set Leverage / Mode",
+            .cancel_all => "Cancel All (Coin)",
+            .close_selected => "Close Selected Position",
+        };
+    }
+
+    fn countCoinOpenOrders(snap: *const Snapshot, coin: []const u8) usize {
+        var n: usize = 0;
+        for (0..snap.open_orders.n_rows) |r| {
+            if (std.ascii.eqlIgnoreCase(snap.open_orders.get(r, 0), coin)) n += 1;
+        }
+        return n;
+    }
+
     fn handleLeverageKey(key: @import("Terminal").Key, ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
         switch (key) {
             .char => |c| switch (c) {
-                'q', 'Q' => ui.leverage.open = false,
+                'q', 'Q' => {
+                    ui.leverage.open = false;
+                    if (ui.leverage.return_to_actions) {
+                        ui.actions.open = true;
+                        ui.actions.mode = .list;
+                        ui.leverage.return_to_actions = false;
+                    }
+                },
                 'h' => ui.leverage.step(-1),
                 'l' => ui.leverage.step(1),
                 'H' => ui.leverage.step(-5),
@@ -732,8 +887,20 @@ const Input = struct {
             .enter => {
                 Orders.updateLeverage(ui, client, config, shared);
                 ui.leverage.open = false;
+                if (ui.leverage.return_to_actions) {
+                    ui.actions.open = true;
+                    ui.actions.mode = .list;
+                    ui.leverage.return_to_actions = false;
+                }
             },
-            .esc => ui.leverage.open = false,
+            .esc => {
+                ui.leverage.open = false;
+                if (ui.leverage.return_to_actions) {
+                    ui.actions.open = true;
+                    ui.actions.mode = .list;
+                    ui.leverage.return_to_actions = false;
+                }
+            },
             else => {},
         }
     }
@@ -742,15 +909,18 @@ const Input = struct {
         var lev_buf: [8]u8 = undefined;
         var lev_len: usize = 0;
         var lev_cross = true;
+        var max_lev: u32 = LEVERAGE_MAX;
         shared.mu.lock();
         lev_buf = shared.leverage_buf;
         lev_len = shared.leverage_len;
         lev_cross = shared.leverage_is_cross;
+        max_lev = shared.max_leverage;
         shared.mu.unlock();
 
+        ui.leverage.max = @max(LEVERAGE_MIN, max_lev);
         if (lev_len > 0) {
             const parsed = std.fmt.parseInt(u32, lev_buf[0..lev_len], 10) catch ui.leverage.value;
-            ui.leverage.value = LeverageState.clamp(parsed);
+            ui.leverage.value = LeverageState.clamp(parsed, ui.leverage.max);
         }
         ui.leverage.is_cross = lev_cross;
         ui.leverage.open = true;
@@ -854,6 +1024,7 @@ const Render = struct {
             if (mx > 1) buf.putStr(mx, 0, mtxt, s_dim);
         }
         buf.putStr(w -| @as(u16, @intCast(badge.len)) -| 1, 0, badge, .{ .fg = hl_text, .bg = hl_accent, .bold = true });
+        if (ui.actions.open) actionModal(buf, ui, snap, .{ .x = 0, .y = 0, .w = w, .h = h });
         if (ui.leverage.open) leverageModal(buf, ui, snap, .{ .x = 0, .y = 0, .w = w, .h = h });
 
         app.endFrame();
@@ -896,7 +1067,7 @@ const Render = struct {
         while (sx < rect.w) : (sx += 1) buf.putStr(rect.x + sx, rect.y + 1, "\xe2\x94\x80", s_dim);
         buf.putStr(rect.x + 1, rect.y + 1, "Fund ", s_dim);
         buf.putStr(rect.x + 6, rect.y + 1, info.funding(), s_green);
-        const hint = "i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  Tab:panel  D:perf";
+        const hint = "i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  Tab:panel  v:actions  D:perf";
         buf.putStr(rect.x + rect.w -| @as(u16, @intCast(hint.len)) -| 1, rect.y + 1, hint, s_dim);
         const bx = rect.x + 7 + @as(u16, @intCast(@min(info.funding().len, 16))) + 2;
         buf.putStr(bx, rect.y + 1, "[", s_dim);
@@ -1222,10 +1393,89 @@ const Render = struct {
         var vb: [12]u8 = undefined;
         const vtxt = std.fmt.bufPrint(&vb, "{d}x", .{ui.leverage.value}) catch "?x";
         buf.putStr(mrect.x + mrect.w -| 12, ty, vtxt, s_bold);
+        var xb: [14]u8 = undefined;
+        const xmax = std.fmt.bufPrint(&xb, "Max: {d}x", .{ui.leverage.max}) catch "";
+        buf.putStr(mrect.x + mrect.w -| @as(u16, @intCast(xmax.len)) -| 2, mrect.y + 2, xmax, s_dim);
 
         const can_set = snap.asset_index != null;
         if (!can_set) buf.putStr(ix, mrect.y + 7, "Asset not resolved yet", s_bold_red);
         buf.putStr(ix, mrect.y + mrect.h -| 3, "h/l: +/-1  H/L: +/-5  c:mode  Enter:apply  Esc:q", s_dim);
+    }
+
+    fn actionModal(buf: *Buffer, ui: *const UiState, snap: *const Snapshot, rect: Rect) void {
+        const scrim = Style{ .bg = C.hex(0x0b1519) };
+        var sy: u16 = 0;
+        while (sy < rect.h) : (sy += 1) {
+            var sx: u16 = 0;
+            while (sx < rect.w) : (sx += 1) buf.putStr(rect.x + sx, rect.y + sy, " ", scrim);
+        }
+
+        const mw: u16 = @min(56, rect.w -| 4);
+        const mh: u16 = @min(14, rect.h -| 4);
+        const mx = rect.x + (rect.w -| mw) / 2;
+        const my = rect.y + (rect.h -| mh) / 2;
+        const mrect = Rect{ .x = mx, .y = my, .w = mw, .h = mh };
+        buf.drawBox(mrect, "Actions", s_cyan);
+        if (mrect.w < 40 or mrect.h < 8) {
+            buf.putStr(mrect.x + 2, mrect.y + 2, "Terminal too small", s_dim);
+            return;
+        }
+
+        const ix = mrect.x + 2;
+        var y = mrect.y + 2;
+        switch (ui.actions.mode) {
+            .list => {
+                const items = [_]ActionId{.set_leverage};
+                for (items, 0..) |id, i| {
+                    const sel = i == ui.actions.selected;
+                    const enabled = actionEnabledSnap(id, ui, snap);
+                    buf.putStr(ix, y, if (sel) "\xe2\x96\xb8" else " ", if (sel) s_cyan else s_dim);
+                    buf.putStr(ix + 2, y, Input.actionTitle(id), if (!enabled) s_dim else if (sel) s_bold else s_white);
+                    if (!enabled) {
+                        const why = switch (id) {
+                            .set_leverage => "asset unresolved",
+                            .cancel_all => "no open orders",
+                            .close_selected => "no positions",
+                        };
+                        buf.putStr(ix + 28, y, why, s_dim);
+                    }
+                    y += 1;
+                }
+                buf.putStr(ix, mrect.y + mrect.h -| 2, "j/k:select  Enter:open  Esc/v:close", s_dim);
+            },
+            .confirm => {
+                buf.putStr(ix, y, Input.actionTitle(ui.actions.current), s_bold);
+                y += 2;
+                const msg = switch (ui.actions.current) {
+                    .cancel_all => "Cancel all open orders for active coin?",
+                    .close_selected => "Close currently selected position?",
+                    .set_leverage => "Apply leverage?",
+                };
+                buf.putStr(ix, y, msg, s_white);
+                buf.putStr(ix, mrect.y + mrect.h -| 2, "Enter:confirm  Esc:back", s_dim);
+            },
+            .number => {
+                buf.putStr(ix, y, Input.actionTitle(ui.actions.current), s_bold);
+                y += 2;
+                var nb: [16]u8 = undefined;
+                const v = std.fmt.bufPrint(&nb, "{d}x", .{ui.actions.number_value}) catch "?x";
+                buf.putStr(ix, y, "Leverage", s_dim);
+                buf.putStr(ix + 12, y, v, s_cyan);
+                y += 1;
+                buf.putStr(ix, y, "Mode", s_dim);
+                buf.putStr(ix + 12, y, if (ui.actions.number_is_cross) "cross" else "isolated", s_white);
+                if (snap.asset_index == null) buf.putStr(ix, y + 2, "Asset not resolved yet", s_bold_red);
+                buf.putStr(ix, mrect.y + mrect.h -| 2, "h/l:+/-1 H/L:+/-5 c:mode Enter:apply Esc:back", s_dim);
+            },
+        }
+    }
+
+    fn actionEnabledSnap(id: ActionId, ui: *const UiState, snap: *const Snapshot) bool {
+        return switch (id) {
+            .set_leverage => snap.asset_index != null,
+            .cancel_all => Input.countCoinOpenOrders(snap, ui.coin[0..ui.coin_len]) > 0,
+            .close_selected => snap.positions.n_rows > 0,
+        };
     }
 
 };
@@ -1314,6 +1564,48 @@ const Orders = struct {
         ui.order.setStatus(if (check.ok) "Order cancelled!" else check.msg, !check.ok);
     }
 
+    fn cancelAll(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
+        const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
+        const snap = Snapshot.take(shared);
+        const asset: u32 = blk: {
+            shared.mu.lock();
+            defer shared.mu.unlock();
+            break :blk @intCast(shared.asset_index orelse {
+                ui.order.setStatus("Asset not resolved", true);
+                return;
+            });
+        };
+
+        var cancels: [MAX_ROWS]types.Cancel = undefined;
+        var n: usize = 0;
+        const coin = ui.coin[0..ui.coin_len];
+        for (0..snap.open_orders.n_rows) |r| {
+            if (!std.ascii.eqlIgnoreCase(snap.open_orders.get(r, 0), coin)) continue;
+            const oid_str = snap.open_orders.get(r, 5);
+            const oid = std.fmt.parseInt(u64, oid_str, 10) catch continue;
+            cancels[n] = .{ .asset = asset, .oid = oid };
+            n += 1;
+            if (n >= MAX_ROWS) break;
+        }
+        if (n == 0) { ui.order.setStatus("No open orders for coin", true); return; }
+
+        const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
+        var result = client.cancel(signer, .{ .cancels = cancels[0..n] }, nonce, null, null) catch {
+            ui.order.setStatus("Cancel all failed (network)", true);
+            return;
+        };
+        defer result.deinit();
+        if (!(result.isOk() catch false)) {
+            var sb: [48]u8 = undefined;
+            const check = checkOrderResult(std.heap.page_allocator, &result, &sb);
+            ui.order.setStatus(check.msg, true);
+            return;
+        }
+        var mb: [48]u8 = undefined;
+        const msg = std.fmt.bufPrint(&mb, "Cancelled {d} order(s)", .{n}) catch "Cancelled orders";
+        ui.order.setStatus(msg, false);
+    }
+
     fn closePosition(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
         const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
         const snap = Snapshot.take(shared);
@@ -1351,7 +1643,7 @@ const Orders = struct {
             };
         };
 
-        const lev = LeverageState.clamp(ui.leverage.value);
+        const lev = LeverageState.clamp(ui.leverage.value, ui.leverage.max);
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const ul = types.UpdateLeverage{
             .asset = asset,
@@ -1399,6 +1691,7 @@ const Rest = struct {
                     shared.mu.lock();
                     defer shared.mu.unlock();
                     shared.asset_index = @intCast(pair.index);
+                    shared.max_leverage = 1;
                     return;
                 }
             }
@@ -1411,6 +1704,7 @@ const Rest = struct {
                     shared.mu.lock();
                     defer shared.mu.unlock();
                     shared.asset_index = idx;
+                    shared.max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX));
                     return;
                 }
             }

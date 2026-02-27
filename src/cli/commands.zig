@@ -142,7 +142,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
             // Zero out key
             @memset(&priv, 0);
             if (w.format == .json) {
-                try w.print("{{\"status\":\"created\",\"name\":\"{s}\",\"address\":\"{s}\"}}\n", .{ name, addr_buf });
+                try w.jsonFmt("{{\"status\":\"created\",\"name\":\"{s}\",\"address\":\"{s}\"}}", .{ name, addr_buf });
             } else {
                 try w.success(name);
                 try w.print("  address: {s}\n  path:    ~/.hl/keys/{s}.json\n", .{ addr_buf, name });
@@ -186,7 +186,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
                 addr_buf[2 + i * 2 + 1] = hex_chars[b & 0xf];
             }
             if (w.format == .json) {
-                try w.print("{{\"status\":\"imported\",\"name\":\"{s}\",\"address\":\"{s}\"}}\n", .{ name, addr_buf });
+                try w.jsonFmt("{{\"status\":\"imported\",\"name\":\"{s}\",\"address\":\"{s}\"}}", .{ name, addr_buf });
             } else {
                 try w.success(name);
                 try w.print("  address: {s}\n  path: ~/.hl/keys/{s}.json\n", .{ addr_buf, name });
@@ -221,7 +221,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
             }
             @memset(&priv, 0);
             if (w.format == .json) {
-                try w.print("{{\"name\":\"{s}\",\"key\":\"{s}\"}}\n", .{ name, hex_buf });
+                try w.jsonFmt("{{\"name\":\"{s}\",\"key\":\"{s}\"}}", .{ name, hex_buf });
             } else {
                 try w.print("{s}\n", .{hex_buf});
             }
@@ -261,16 +261,19 @@ fn keysLs(allocator: std.mem.Allocator, w: *Writer) !void {
     }
 
     if (w.format == .json) {
-        try w.print("[", .{});
+        var jbuf: [4096]u8 = undefined;
+        var jlen: usize = 0;
+        jbuf[0] = '[';
+        jlen = 1;
         for (entries, 0..) |e, i| {
-            if (i > 0) try w.print(",", .{});
-            try w.print("{{\"name\":\"{s}\",\"address\":\"{s}\",\"default\":{s}}}", .{
-                e.getName(),
-                e.address,
-                if (e.is_default) "true" else "false",
-            });
+            if (i > 0) { jbuf[jlen] = ','; jlen += 1; }
+            jlen += (std.fmt.bufPrint(jbuf[jlen..], "{{\"name\":\"{s}\",\"address\":\"{s}\",\"default\":{s}}}", .{
+                e.getName(), e.address, if (e.is_default) "true" else "false",
+            }) catch break).len;
         }
-        try w.print("]\n", .{});
+        jbuf[jlen] = ']';
+        jlen += 1;
+        try w.jsonRaw(jbuf[0..jlen]);
         return;
     }
 
@@ -293,7 +296,7 @@ fn keysRm(w: *Writer, name: []const u8) !void {
         return;
     };
     if (w.format == .json) {
-        try w.print("{{\"status\":\"removed\",\"name\":\"{s}\"}}\n", .{name});
+        try w.jsonFmt("{{\"status\":\"removed\",\"name\":\"{s}\"}}", .{name});
     } else {
         try w.success("removed");
         try w.print("  {s}\n", .{name});
@@ -317,7 +320,7 @@ fn keysDefault(w: *Writer, name: []const u8) !void {
         return;
     };
     if (w.format == .json) {
-        try w.print("{{\"status\":\"default\",\"name\":\"{s}\"}}\n", .{name});
+        try w.jsonFmt("{{\"status\":\"default\",\"name\":\"{s}\"}}", .{name});
     } else {
         try w.success("default set");
         try w.print("  {s}\n", .{name});
@@ -345,7 +348,7 @@ pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a:
     defer result.deinit();
     if (result.isOk() catch false) {
         if (w.format == .json) {
-            try w.print("{{\"status\":\"approved\",\"agent\":\"{s}\"}}\n", .{agent_addr});
+            try w.jsonFmt("{{\"status\":\"approved\",\"agent\":\"{s}\"}}", .{agent_addr});
         } else {
             try w.success("Agent approved");
             try w.print("  {s}\n", .{agent_addr});
@@ -359,7 +362,7 @@ pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a:
 
 pub fn showConfig(w: *Writer, config: Config) !void {
     if (w.format == .json) {
-        try w.print("{{\"chain\":\"{s}\",\"address\":{s},\"key_set\":{s}}}\n", .{
+        try w.jsonFmt("{{\"chain\":\"{s}\",\"address\":{s},\"key_set\":{s}}}", .{
             if (config.chain == .mainnet) "mainnet" else "testnet",
             if (config.address) |a| a else "null",
             if (config.key_hex != null) "true" else "false",
@@ -703,7 +706,9 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         defer spot_raw.deinit();
         var perp_raw = try client.clearinghouseState(addr, a.dex);
         defer perp_raw.deinit();
-        try w.print("{{\"spot\":{s},\"perp\":{s}}}\n", .{ spot_raw.body, perp_raw.body });
+        var combo_buf: [16384]u8 = undefined;
+        const combo = std.fmt.bufPrint(&combo_buf, "{{\"spot\":{s},\"perp\":{s}}}", .{ spot_raw.body, perp_raw.body }) catch return;
+        try w.jsonRaw(combo);
         return;
     }
 
@@ -1327,7 +1332,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
 
         if (cancel_count == 0) {
             if (w.format == .json) {
-                try w.print("{{\"status\":\"ok\",\"cancelled\":0}}\n", .{});
+                try w.jsonFmt("{{\"status\":\"ok\",\"cancelled\":0}}", .{});
             } else {
                 try w.print("no open orders for {s}\n", .{coin});
             }
@@ -2698,13 +2703,17 @@ pub fn price(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     const bl: ?[2][]response.BookLevel = if (book_typed) |bt| bt.value.levels else null;
 
     if (w.format == .json) {
-        try w.print("{{\"coin\":\"{s}\"", .{a.coin});
-        if (mid_str) |m_s| try w.print(",\"mid\":{s}", .{m_s});
+        var jbuf: [256]u8 = undefined;
+        var jlen: usize = 0;
+        const jsl = jbuf[0..];
+        jlen += (std.fmt.bufPrint(jsl[jlen..], "{{\"coin\":\"{s}\"", .{a.coin}) catch return).len;
+        if (mid_str) |m_s| jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"mid\":{s}", .{m_s}) catch return).len;
         if (bl) |levels| {
-            if (levels[0].len > 0) { var bb: [32]u8 = undefined; try w.print(",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}); }
-            if (levels[1].len > 0) { var ab: [32]u8 = undefined; try w.print(",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}); }
+            if (levels[0].len > 0) { var bb: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"bid\":{s}", .{decFmt(levels[0][0].px, &bb)}) catch return).len; }
+            if (levels[1].len > 0) { var ab: [32]u8 = undefined; jlen += (std.fmt.bufPrint(jsl[jlen..], ",\"ask\":{s}", .{decFmt(levels[1][0].px, &ab)}) catch return).len; }
         }
-        try w.print("}}\n", .{});
+        jlen += (std.fmt.bufPrint(jsl[jlen..], "}}", .{}) catch return).len;
+        try w.jsonRaw(jbuf[0..jlen]);
         return;
     }
 
@@ -2785,7 +2794,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         if (w.format == .json) {
             var result = try client.activeAssetData(addr, a.coin);
             defer result.deinit();
-            try w.print("{s}\n", .{result.body});
+            try w.jsonRaw(result.body);
             return;
         }
 
@@ -2837,7 +2846,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
 
     if (try result.isOk()) {
         if (w.format == .json) {
-            try w.print("{{\"status\":\"ok\",\"coin\":\"{s}\",\"leverage\":{d},\"mode\":\"{s}\"}}\n", .{
+            try w.jsonFmt("{{\"coin\":\"{s}\",\"leverage\":{d},\"mode\":\"{s}\"}}", .{
                 a.coin, lev, if (a.cross) "cross" else "isolated",
             });
         } else {
@@ -2863,7 +2872,9 @@ pub fn portfolio(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         defer perp_result.deinit();
         var spot_result = try client.spotClearinghouseState(addr);
         defer spot_result.deinit();
-        try w.print("{{\"perp\":{s},\"spot\":{s}}}\n", .{ perp_result.body, spot_result.body });
+        var combo_buf: [16384]u8 = undefined;
+        const combo = std.fmt.bufPrint(&combo_buf, "{{\"perp\":{s},\"spot\":{s}}}", .{ perp_result.body, spot_result.body }) catch return;
+        try w.jsonRaw(combo);
         return;
     }
 
@@ -3029,7 +3040,7 @@ pub fn referralCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
             if (w.format == .json) {
                 var result = try client.referral(addr);
                 defer result.deinit();
-                try w.print("{s}\n", .{result.body});
+                try w.jsonRaw(result.body);
                 return;
             }
 
@@ -3056,7 +3067,7 @@ pub fn referralCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
 
             if (try result.isOk()) {
                 if (w.format == .json) {
-                    try w.print("{{\"status\":\"ok\",\"code\":\"{s}\"}}\n", .{code});
+                    try w.jsonFmt("{{\"status\":\"ok\",\"code\":\"{s}\"}}", .{code});
                 } else {
                     try w.print("referral code set: {s}\n", .{code});
                 }
@@ -3098,7 +3109,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         // Fetch BBO for slippage price
         var book_result = client.l2Book(a.coin) catch {
             if (w.format == .json) {
-                try w.print("{{\"event\":\"error\",\"slice\":{d},\"error\":\"book_fetch_failed\"}}\n", .{i + 1});
+                try w.jsonFmt("{{\"event\":\"error\",\"slice\":{d},\"error\":\"book_fetch_failed\"}}", .{i + 1});
             } else {
                 try w.errFmt("slice {d}: failed to fetch book", .{i + 1});
             }
@@ -3140,7 +3151,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
 
         var result = client.place(signer, batch_order, nonce, null, null) catch |e| {
             if (w.format == .json) {
-                try w.print("{{\"event\":\"error\",\"slice\":{d},\"error\":\"{s}\"}}\n", .{ i + 1, @errorName(e) });
+                try w.jsonFmt("{{\"event\":\"error\",\"slice\":{d},\"error\":\"{s}\"}}", .{ i + 1, @errorName(e) });
             } else {
                 try w.errFmt("slice {d}: {s}", .{ i + 1, @errorName(e) });
             }
@@ -3173,7 +3184,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
 
         if (w.format == .json) {
             var avg_buf: [24]u8 = undefined;
-            try w.print("{{\"event\":\"slice\",\"n\":{d},\"filled\":\"{s}\",\"price\":\"{s}\",\"total_filled\":\"{s}\"}}\n", .{
+            try w.jsonFmt("{{\"event\":\"slice\",\"n\":{d},\"filled\":\"{s}\",\"price\":\"{s}\",\"total_filled\":\"{s}\"}}", .{
                 i + 1, smartFmt(&sz_buf, slice_filled), smartFmt(&px_buf, slice_px), smartFmt(&avg_buf, filled),
             });
         } else {
@@ -3194,7 +3205,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     if (w.format == .json) {
         var fb: [24]u8 = undefined;
         var ab: [24]u8 = undefined;
-        try w.print("{{\"event\":\"done\",\"total_filled\":\"{s}\",\"avg_price\":\"{s}\",\"slices\":{d}}}\n", .{
+        try w.jsonFmt("{{\"event\":\"done\",\"total_filled\":\"{s}\",\"avg_price\":\"{s}\",\"slices\":{d}}}", .{
             smartFmt(&fb, filled), smartFmt(&ab, avg_px), slices,
         });
     } else {

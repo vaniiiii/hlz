@@ -38,6 +38,8 @@ pub const Writer = struct {
     is_tty: bool,
     format: OutputFormat,
     quiet: bool = false,
+    cmd: []const u8 = "",
+    start_ns: i128 = 0,
 
     pub fn init(format: OutputFormat) Writer {
         const is_tty = std.posix.isatty(std.fs.File.stdout().handle) and !noColor();
@@ -250,8 +252,39 @@ pub const Writer = struct {
     }
 
     pub fn jsonRaw(self: *Writer, body: []const u8) !void {
-        try self.out(body);
+        if (self.cmd.len > 0) {
+            try self.out("{\"v\":1,\"status\":\"ok\",\"cmd\":\"");
+            try self.out(self.cmd);
+            try self.out("\",\"data\":");
+            try self.out(body);
+            var ms_buf: [32]u8 = undefined;
+            const ms = self.elapsedMs();
+            const ms_str = std.fmt.bufPrint(&ms_buf, ",\"timing_ms\":{d}}}\n", .{ms}) catch ",\"timing_ms\":0}\n";
+            try self.out(ms_str);
+        } else {
+            try self.out(body);
+            try self.out("\n");
+        }
+    }
+
+    /// Write raw string to stdout (no envelope). Used for pre-built error envelopes.
+    pub fn rawJson(self: *Writer, data: []const u8) !void {
+        try self.out(data);
         try self.out("\n");
+    }
+
+    /// Emit a formatted JSON object wrapped in the envelope.
+    pub fn jsonFmt(self: *Writer, comptime fmt: []const u8, fmtargs: anytype) !void {
+        var buf: [4096]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf, fmt, fmtargs) catch return;
+        try self.jsonRaw(body);
+    }
+
+    pub fn elapsedMs(self: *Writer) u64 {
+        if (self.start_ns == 0) return 0;
+        const now = std.time.nanoTimestamp();
+        const delta = now - self.start_ns;
+        return if (delta > 0) @intCast(@divFloor(delta, 1_000_000)) else 0;
     }
 
     pub fn err(self: *Writer, msg: []const u8) !void {

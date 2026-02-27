@@ -55,6 +55,44 @@ pub fn main() !void {
         return;
     };
 
+    // Set command context for JSON envelope
+    const cmd_name: []const u8 = switch (cmd) {
+        .help => "help",
+        .version => "version",
+        .config => "config",
+        .keys => "keys",
+        .approve_agent => "approve-agent",
+        .mids => "mids",
+        .positions => "positions",
+        .orders => "orders",
+        .fills => "fills",
+        .balance => "balance",
+        .perps => "perps",
+        .spot => "spot",
+        .dexes => "dexes",
+        .buy => "buy",
+        .sell => "sell",
+        .cancel => "cancel",
+        .modify => "modify",
+        .send => "send",
+        .stream => "stream",
+        .status => "status",
+        .funding => "funding",
+        .book => "book",
+        .markets => "markets",
+        .leverage => "leverage",
+        .price => "price",
+        .portfolio => "portfolio",
+        .referral => "referral",
+        .twap => "twap",
+        .batch => "batch",
+        .trade => "trade",
+    };
+    if (w.format == .json) {
+        w.cmd = cmd_name;
+        w.start_ns = std.time.nanoTimestamp();
+    }
+
     switch (cmd) {
         .help => try printHelp(&w),
         .version => try printVersion(&w),
@@ -102,7 +140,6 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
     };
 
     if (w.format == .json) {
-        // Structured error envelope on stdout for agent consumption
         var buf: [512]u8 = undefined;
         const name = @errorName(e);
         const retryable = switch (e) {
@@ -116,10 +153,11 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
             error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
             else => "",
         };
+        const ms = w.elapsedMs();
         const s = std.fmt.bufPrint(&buf,
-            \\{{"status":"error","command":"{s}","error":"{s}","retryable":{s},"hint":"{s}"}}
-        , .{ cmd, name, if (retryable) "true" else "false", hint }) catch return;
-        w.jsonRaw(s) catch {};
+            \\{{"v":1,"status":"error","cmd":"{s}","error":"{s}","retryable":{s},"hint":"{s}","timing_ms":{d}}}
+        , .{ cmd, name, if (retryable) "true" else "false", hint, ms }) catch return;
+        w.rawJson(s) catch {};
     } else {
         w.errFmt("{s}: {s}", .{ cmd, @errorName(e) }) catch {};
     }
