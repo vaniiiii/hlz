@@ -1164,7 +1164,8 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
 
     const signer = try config.getSigner();
 
-    const asset = try resolveAsset(allocator, &client, a.coin);
+    const resolved = try resolveAsset(allocator, &client, a.coin);
+    const asset = resolved.index;
 
     const sz = Decimal.fromString(a.size) catch return error.Overflow;
 
@@ -1191,12 +1192,16 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
 
     // For spot orders, derive @index from resolved asset for book lookup
     var book_idx_buf: [16]u8 = undefined;
-    const book_coin = if (asset >= 10000)
+    var book_coin_upper: [16]u8 = undefined;
+    const book_coin = if (asset > 10000)
         (std.fmt.bufPrint(&book_idx_buf, "@{d}", .{asset - 10000}) catch a.coin)
+    else if (asset == 10000)
+        upperCoin(a.coin, &book_coin_upper) // PURR/USDC (index 0) uses pair name
     else
         a.coin;
 
-    const limit_px = if (a.price) |px_str|
+    const tick_mod = hlz.hypercore.tick;
+    const limit_px_raw = if (a.price) |px_str|
         Decimal.fromString(px_str) catch return error.Overflow
     else if (a.slippage) |sl_str|
         Decimal.fromString(sl_str) catch return error.Overflow
@@ -1223,6 +1228,15 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
             break :blk Decimal.fromString("0.01") catch unreachable;
         }
     };
+
+    // Round to valid tick size
+    const limit_px = if (resolved.sz_decimals >= 0) blk: {
+        const pt = if (asset >= 10000)
+            tick_mod.PriceTick.forSpot(resolved.sz_decimals)
+        else
+            tick_mod.PriceTick.forPerp(resolved.sz_decimals);
+        break :blk pt.round(limit_px_raw) orelse limit_px_raw;
+    } else limit_px_raw;
 
     const now: u64 = @intCast(std.time.milliTimestamp());
     var cloid = types.ZERO_CLOID;
@@ -1396,7 +1410,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     }
 
     const coin = a.coin orelse return error.MissingArgument;
-    const asset = try resolveAsset(allocator, &client, coin);
+    const asset = (try resolveAsset(allocator, &client, coin)).index;
 
     // cancel ETH (no OID, no CLOID) → cancel all orders for this coin
     if (a.oid == null and a.cloid == null) {
@@ -1583,7 +1597,7 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     var nonce_handler = response.NonceHandler.init();
     const nonce = nonce_handler.next();
 
-    const asset = try resolveAsset(allocator, &client, a.coin);
+    const asset = (try resolveAsset(allocator, &client, a.coin)).index;
     const oid = std.fmt.parseInt(u64, a.oid, 10) catch return error.Overflow;
     const sz = Decimal.fromString(a.size) catch return error.Overflow;
     const px = Decimal.fromString(a.price) catch return error.Overflow;
@@ -2402,13 +2416,15 @@ fn upperCoin(coin: []const u8, buf: *[16]u8) []const u8 {
     return buf[0..len];
 }
 
-/// Resolve asset name to index. Supports:
-///   "BTC"        → perp on main DEX
-///   "PURR/USDC"  → spot market (index = 10000 + spot_index)
-///   "xyz:BTC"    → perp on HIP-3 DEX "xyz"
-///   "42"         → raw index
-fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize {
-    if (std.fmt.parseInt(usize, coin, 10) catch null) |idx| return idx;
+const ResolvedAsset = struct {
+    index: usize,
+    sz_decimals: i32, // -1 = unknown (raw index input)
+};
+
+/// Resolve asset name to index and sz_decimals.
+fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !ResolvedAsset {
+    if (std.fmt.parseInt(usize, coin, 10) catch null) |idx|
+        return .{ .index = idx, .sz_decimals = -1 };
 
     if (std.mem.indexOf(u8, coin, "/")) |slash| {
         const base = coin[0..slash];
@@ -2421,7 +2437,10 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
             if (std.ascii.eqlIgnoreCase(tokens[pair.tokens[0]].name, base) and
                 std.ascii.eqlIgnoreCase(tokens[pair.tokens[1]].name, quote))
             {
-                return @intCast(10000 + pair.index);
+                return .{
+                    .index = @intCast(10000 + pair.index),
+                    .sz_decimals = @intCast(tokens[pair.tokens[0]].szDecimals),
+                };
             }
         }
         return error.AssetNotFound;
@@ -2433,9 +2452,11 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
         var typed = try client.getPerps(dex_name);
         defer typed.deinit();
         for (typed.value.universe, 0..) |pm, i| {
-            if (std.ascii.eqlIgnoreCase(pm.name, symbol)) return i;
+            if (std.ascii.eqlIgnoreCase(pm.name, symbol))
+                return .{ .index = i, .sz_decimals = @intCast(pm.szDecimals) };
             if (std.mem.indexOf(u8, pm.name, ":")) |nc| {
-                if (std.ascii.eqlIgnoreCase(pm.name[nc + 1 ..], symbol)) return i;
+                if (std.ascii.eqlIgnoreCase(pm.name[nc + 1 ..], symbol))
+                    return .{ .index = i, .sz_decimals = @intCast(pm.szDecimals) };
             }
         }
         return error.AssetNotFound;
@@ -2445,7 +2466,8 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !usize 
     defer typed.deinit();
 
     for (typed.value.universe, 0..) |pm, i| {
-        if (std.ascii.eqlIgnoreCase(pm.name, coin)) return i;
+        if (std.ascii.eqlIgnoreCase(pm.name, coin))
+            return .{ .index = i, .sz_decimals = @intCast(pm.szDecimals) };
     }
 
     return error.AssetNotFound;
@@ -3073,7 +3095,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const asset = try resolveAsset(allocator, &client, a.coin);
+    const asset = (try resolveAsset(allocator, &client, a.coin)).index;
 
     // If no leverage value, just show current leverage info
     if (a.leverage == null) {
@@ -3372,7 +3394,8 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     defer client.deinit();
 
     const signer = try config.getSigner();
-    const asset = try resolveAsset(allocator, &client, a.coin);
+    const resolved = try resolveAsset(allocator, &client, a.coin);
+    const asset = resolved.index;
     const total_sz = std.fmt.parseFloat(f64, a.size) catch return error.Overflow;
     const is_buy = std.mem.eql(u8, a.side, "buy") or std.mem.eql(u8, a.side, "long");
     const duration_ms = parseDuration(a.duration) orelse return error.InvalidFlag;
@@ -3389,12 +3412,21 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         try w.print("{s}  interval: {d}s\n\n", .{ smartFmt(&sb, slice_sz), interval_ms / 1000 });
     }
 
+    // Resolve spot @index for book lookup
+    var twap_book_buf: [16]u8 = undefined;
+    var twap_coin_upper: [16]u8 = undefined;
+    const twap_book_coin = if (asset > 10000)
+        (std.fmt.bufPrint(&twap_book_buf, "@{d}", .{asset - 10000}) catch a.coin)
+    else if (asset == 10000)
+        upperCoin(a.coin, &twap_coin_upper)
+    else
+        a.coin;
+
     var filled: f64 = 0;
     var total_cost: f64 = 0;
 
     for (0..slices) |i| {
-        // Fetch BBO for slippage price
-        var book_result = client.l2Book(a.coin) catch {
+        var book_result = client.l2Book(twap_book_coin) catch {
             if (w.format == .json) {
                 try w.jsonFmt("{{\"event\":\"error\",\"slice\":{d},\"error\":\"book_fetch_failed\"}}", .{i + 1});
             } else {
@@ -3413,7 +3445,14 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
 
         var px_buf: [32]u8 = undefined;
         const px_str = slippageFmt(&px_buf, slip_px);
-        const limit_px = Decimal.fromString(px_str) catch continue;
+        const limit_px_raw = Decimal.fromString(px_str) catch continue;
+        const limit_px = if (resolved.sz_decimals >= 0) blk: {
+            const pt = if (asset >= 10000)
+                hlz.hypercore.tick.PriceTick.forSpot(resolved.sz_decimals)
+            else
+                hlz.hypercore.tick.PriceTick.forPerp(resolved.sz_decimals);
+            break :blk pt.round(limit_px_raw) orelse limit_px_raw;
+        } else limit_px_raw;
 
         var sz_buf: [32]u8 = undefined;
         const sz_str = smartFmt(&sz_buf, slice_sz);
@@ -3621,10 +3660,11 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
         const size_str = tokens[2];
         const is_buy = std.mem.eql(u8, side_str, "buy") or std.mem.eql(u8, side_str, "long");
 
-        const asset_idx = resolveAsset(allocator, &client, coin) catch {
+        const resolved_asset = resolveAsset(allocator, &client, coin) catch {
             try w.errFmt("order {d}: unknown asset {s}", .{ i + 1, coin });
             continue;
         };
+        const asset_idx = resolved_asset.index;
 
         const sz = Decimal.fromString(size_str) catch {
             try w.errFmt("order {d}: invalid size {s}", .{ i + 1, size_str });
@@ -3646,13 +3686,30 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
         }
 
         if (!found_price) {
-            // Market order — get BBO
-            var book_typed = client.getL2Book(coin) catch continue;
+            // Market order — resolve spot @index for book lookup
+            var batch_book_buf: [16]u8 = undefined;
+            var batch_coin_upper: [16]u8 = undefined;
+            const batch_book_coin = if (asset_idx > 10000)
+                (std.fmt.bufPrint(&batch_book_buf, "@{d}", .{asset_idx - 10000}) catch coin)
+            else if (asset_idx == 10000)
+                upperCoin(coin, &batch_coin_upper)
+            else
+                coin;
+            var book_typed = client.getL2Book(batch_book_coin) catch continue;
             defer book_typed.deinit();
             const best = getBestPrice(book_typed.value.levels, is_buy) orelse continue;
             const slip = if (is_buy) best * 1.01 else best * 0.99;
             var sb: [32]u8 = undefined;
             limit_px = Decimal.fromString(slippageFmt(&sb, slip)) catch continue;
+        }
+
+        // Round to valid tick size
+        if (resolved_asset.sz_decimals >= 0) {
+            const pt = if (asset_idx >= 10000)
+                hlz.hypercore.tick.PriceTick.forSpot(resolved_asset.sz_decimals)
+            else
+                hlz.hypercore.tick.PriceTick.forPerp(resolved_asset.sz_decimals);
+            limit_px = pt.round(limit_px) orelse limit_px;
         }
 
         batch_items[order_count] = .{
