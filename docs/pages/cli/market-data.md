@@ -4,22 +4,54 @@ All market data commands work without authentication.
 
 ## `hlz price <COIN>`
 
-Get the current mid price with bid/ask spread. Returns exit 1 if the coin doesn't exist.
+Smart price lookup across all Hyperliquid venues. Resolves perps, spot pairs, and HIP-3 DEX markets automatically.
+
+**Resolution rules:**
+- `BTC` → perp on default dex (most liquid, USDC-settled)
+- `HYPE/USDC` → explicit spot pair (oracle-adjusted USD price via `tokenDetails`)
+- `xyz:AAPL` → perp on xyz dex
+- `HYPE --quote USDH` → spot pair HYPE/USDH
+- `HYPE --all` → every venue: perp + all spot quote pairs
+
+When only a perp is shown, a hint suggests `--all` for additional markets.
+
+**Flags:**
+- `--dex <NAME>` — target a specific HIP-3 DEX (e.g. `xyz`, `flx`)
+- `--quote <ASSET>` — filter to a specific spot quote asset (e.g. `USDC`, `USDH`, `USDT0`, `USDE`)
+- `--all` — show all matching markets (perps + every spot pair)
 
 ```bash
-hlz price BTC
-# BTC: $97,432.50  bid $97,432.00 / ask $97,433.00  spread 0.001%
+# Perps (default)
+hlz price BTC                     # → $65,000 (perp, default dex)
+hlz price ETH -q                  # → 1925.0 (quiet, just the number)
 
-hlz price BTC --json
-# {"coin":"BTC","mid":97432.5,"bid":97432.0,"ask":97433.0}
+# HIP-3 DEX perps
+hlz price xyz:AAPL                # → $265 (stocks on xyz)
+hlz price BTC --dex flx           # → BTC on flx (USDH collateral)
 
-hlz price PURR/USDC --json
-# {"coin":"PURR/USDC","mid":0.066454,"bid":0.066309,"ask":0.066599}
+# Spot pairs
+hlz price HYPE/USDC               # → $27 (oracle USD price)
+hlz price UETH/USDC               # → $1,925 (not the raw book unit price)
+hlz price HYPE --quote USDH       # → HYPE/USDH spot price
+
+# All venues
+hlz price HYPE --all
+# Shows: HYPE perp, HYPE/USDC, HYPE/USDT0, HYPE/USDH, HYPE/USDE
+
+hlz price HYPE --all --json
+# [{"market":"HYPE","type":"perp","venue":"hl","price":27.08},
+#  {"market":"HYPE/USDC","type":"spot","venue":"USDC","price":27.12}, ...]
 ```
+
+**Spot price accuracy:** For spot pairs, `price` uses the `tokenDetails` API which returns oracle-adjusted USD prices (same as the Hyperliquid web frontend). The raw `allMids` endpoint returns per-sz-unit book midpoints which can differ significantly for non-canonical tokens — use `hlz mids` if you need raw book data.
+
+**Perp collateral:** Different HIP-3 DEXes use different collateral tokens (USDC, USDH, USDE). Use `--dex` to target a specific venue. Use `hlz dexes` to see available DEXes.
 
 ## `hlz mids [COIN]`
 
-All mid prices. Optionally filter by coin. Spot pairs show as human-readable names (e.g. `PURR/USDC`), not raw `@index` keys.
+Raw order book mid prices from the `allMids` API. Returns per-sz-unit midpoints — for human-friendly spot prices, use `hlz price` instead.
+
+Spot pairs show as human-readable names (e.g. `PURR/USDC`), not raw `@index` keys.
 
 ```bash
 hlz mids                    # Top 20 by default
@@ -78,7 +110,7 @@ hlz spot --all              # All spot markets
 
 ## `hlz dexes`
 
-List available HIP-3 DEXes.
+List available HIP-3 DEXes with their collateral tokens.
 
 ```bash
 hlz dexes

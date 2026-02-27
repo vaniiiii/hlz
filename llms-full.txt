@@ -330,14 +330,16 @@ All market data commands work without authentication.
 
 ## `hlz price <COIN>`
 
-Get the current mid price with bid/ask spread.
+Smart price lookup across perps, spot, and HIP-3 DEXes.
+
+Flags: `--dex NAME`, `--quote ASSET`, `--all`
 
 ```bash
-hlz price BTC
-# BTC: $97,432.50  bid $97,432.00 / ask $97,433.00  spread 0.001%
-
-hlz price BTC --json
-# {"coin":"BTC","mid":"97432.5","bid":"97432.0","ask":"97433.0","spread":"0.00103"}
+hlz price BTC                     # Perp (default dex)
+hlz price xyz:AAPL                # HIP-3 DEX perp
+hlz price HYPE/USDC               # Spot pair (oracle USD price)
+hlz price HYPE --quote USDH       # Spot against USDH
+hlz price HYPE --all --json       # All venues as JSON array
 ```
 
 ## `hlz mids [COIN]`

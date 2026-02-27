@@ -2,10 +2,22 @@
 
 ## Quick Install
 
-Auto-detects OS and architecture:
+Auto-detects OS and architecture, then installs to:
+- `/usr/local/bin` when run as root
+- `~/.local/bin` when run as a regular user
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+```
+
+### Install Options
+
+```bash
+# Explicit install directory
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+
+# System-wide install
+curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh -s -- --system
 ```
 
 ## Manual Download
@@ -16,25 +28,27 @@ Download from [GitHub Releases](https://github.com/vaniiiii/hlz/releases/latest)
 
 ```bash [macOS (Apple Silicon)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
-chmod +x hlz && sudo mv hlz /usr/local/bin/
+chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [macOS (Intel)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-x64
-chmod +x hlz && sudo mv hlz /usr/local/bin/
+chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [Linux (x86_64)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
-chmod +x hlz && sudo mv hlz /usr/local/bin/
+chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [Linux (aarch64)]
 curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-arm64
-chmod +x hlz && sudo mv hlz /usr/local/bin/
+chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 :::
+
+> If `~/.local/bin` is not in your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
 > **Static binaries** — Linux builds are statically linked (musl). Zero dependencies, runs on any distro. ~636KB.
 
