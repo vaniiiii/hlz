@@ -67,7 +67,7 @@ fn runListView(
 
     var app = App.init(opts.allocator) catch {
         std.fs.File.stderr().writeAll("error: requires an interactive terminal\n") catch {};
-        return;
+        return error.CommandFailed;
     };
     defer app.deinit();
     app.setTickMs(100);
@@ -86,7 +86,7 @@ fn runListView(
                         if (list.selectedIndex()) |idx| {
                             app.deinit();
                             cb(opts.allocator, opts.config, items, idx);
-                            app = App.init(opts.allocator) catch return;
+                            app = App.init(opts.allocator) catch return error.CommandFailed;
                             app.setTickMs(100);
                         }
                     }
@@ -132,7 +132,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
                 try w.errFmt("save: {s}", .{@errorName(e)});
                 return error.CommandFailed;
             };
-            const signer = Signer.init(priv) catch return;
+            const signer = Signer.init(priv) catch return error.CommandFailed;
             var addr_buf: [42]u8 = undefined;
             addr_buf[0] = '0';
             addr_buf[1] = 'x';
@@ -210,7 +210,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
                 } else {
                     try w.errFmt("decrypt: {s}", .{@errorName(e)});
                 }
-                return;
+                return error.CommandFailed;
             };
             // Print hex (stderr for safety, stdout only if piped/json)
             var hex_buf: [66]u8 = undefined;
@@ -390,7 +390,7 @@ pub fn mids(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     defer result.deinit();
 
     const val = try result.json();
-    if (val != .object) return;
+    if (val != .object) return error.CommandFailed;
 
     // Resolve @index → human-readable spot pair names via universe + tokens
     var spot_names: [512][48]u8 = undefined;
@@ -780,7 +780,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
         var perp_raw = try client.clearinghouseState(addr, a.dex);
         defer perp_raw.deinit();
         var combo_buf: [16384]u8 = undefined;
-        const combo = std.fmt.bufPrint(&combo_buf, "{{\"spot\":{s},\"perp\":{s}}}", .{ spot_raw.body, perp_raw.body }) catch return;
+        const combo = std.fmt.bufPrint(&combo_buf, "{{\"spot\":{s},\"perp\":{s}}}", .{ spot_raw.body, perp_raw.body }) catch return error.CommandFailed;
         try w.jsonRaw(combo);
         return;
     }
@@ -841,7 +841,7 @@ pub fn balance(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args
 
     var spot_typed = client.getSpotBalances(addr) catch {
         try w.nl();
-        return;
+        return error.NetworkError;
     };
     defer spot_typed.deinit();
     const balances = spot_typed.value.balances;

@@ -106,7 +106,7 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
     const code: u8 = switch (e) {
         error.MissingKey, error.MissingAddress => EXIT_AUTH,
         error.MissingArgument, error.InvalidFlag => EXIT_USAGE,
-        error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable => EXIT_NETWORK,
+        error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable, error.NetworkError => EXIT_NETWORK,
         else => EXIT_ERROR,
     };
 
@@ -114,7 +114,7 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
         var buf: [512]u8 = undefined;
         const name = @errorName(e);
         const retryable = switch (e) {
-            error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable => true,
+            error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable, error.NetworkError => true,
             else => false,
         };
         const hint = switch (e) {
@@ -124,6 +124,7 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
             error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
             error.CommandFailed => "",
             error.InvalidFlag => "check flag values",
+            error.NetworkError => "check network connection",
             else => "",
         };
         const ms = w.elapsedMs();

@@ -1,12 +1,12 @@
 # CLI Overview
 
-`hlz` is a 38-command CLI for Hyperliquid. 636KB static binary, zero config required for market data.
+`hlz` is a 38-command CLI for Hyperliquid. 827KB static binary, zero config required for market data.
 
 ## Design Principles
 
 - **Pipe-aware** — Tables on TTY, JSON when piped. No surprises.
 - **Agent-native** — Structured output, semantic exit codes, no interactive prompts.
-- **One binary** — Everything in 636KB. No runtime dependencies.
+- **One binary** — Everything in 827KB. No runtime dependencies.
 - **Smart defaults** — Works out of the box. Power users customize.
 
 ## Command Categories

@@ -50,7 +50,7 @@ chmod +x hlz && mv hlz "$HOME/.local/bin/"
 
 > If `~/.local/bin` is not in your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile.
 
-> **Static binaries** — Linux builds are statically linked (musl). Zero dependencies, runs on any distro. ~636KB.
+> **Static binaries** — Linux builds are statically linked (musl). Zero dependencies, runs on any distro. ~827KB.
 
 ## Build from Source
 
@@ -60,7 +60,7 @@ Requires [Zig 0.15.2](https://ziglang.org/download/).
 git clone https://github.com/vaniiiii/hlz
 cd hlz
 
-# Production build (636KB stripped binary)
+# Production build (827KB stripped binary)
 zig build -Doptimize=ReleaseSmall
 
 # Fastest execution (1.2MB)
