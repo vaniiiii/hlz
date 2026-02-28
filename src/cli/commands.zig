@@ -26,6 +26,7 @@ pub const CmdError = client_mod.ClientError || config_mod.ConfigError || error{
     Overflow,
     MissingAddress,
     MissingKey,
+    AddressMismatch,
     AssetNotFound,
     CommandFailed,
     InvalidFlag,
@@ -110,6 +111,31 @@ fn failFmt(w: *Writer, comptime fmt: []const u8, a: anytype) CmdError!void {
     return error.CommandFailed;
 }
 
+const WriteAuth = struct {
+    signer: Signer,
+    address_buf: [42]u8,
+
+    fn address(self: *const WriteAuth) []const u8 {
+        return self.address_buf[0..];
+    }
+};
+
+fn getWriteAuth(w: *Writer, config: Config) CmdError!WriteAuth {
+    const signer = config.getSigner() catch |e| return e;
+    var auth = WriteAuth{
+        .signer = signer,
+        .address_buf = undefined,
+    };
+    const signer_addr = signer.addressHex(&auth.address_buf);
+    if (config.address) |addr| {
+        if (!std.ascii.eqlIgnoreCase(addr, signer_addr)) {
+            try w.failFmt("--address {s} does not match signer address {s} for write commands", .{ addr, signer_addr });
+            return error.AddressMismatch;
+        }
+    }
+    return auth;
+}
+
 pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !void {
     const password = a.password orelse std.posix.getenv("HL_PASSWORD") orelse {
         // For ls, no password needed
@@ -147,13 +173,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
                 return fail(w, "invalid private key");
             };
             var addr_buf: [42]u8 = undefined;
-            addr_buf[0] = '0';
-            addr_buf[1] = 'x';
-            const hex_chars = "0123456789abcdef";
-            for (signer.address, 0..) |b, i| {
-                addr_buf[2 + i * 2] = hex_chars[b >> 4];
-                addr_buf[2 + i * 2 + 1] = hex_chars[b & 0xf];
-            }
+            _ = signer.addressHex(&addr_buf);
             // Zero out key
             @memset(&priv, 0);
             if (w.format == .json) {
@@ -191,13 +211,7 @@ pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !voi
             };
             @memset(&priv, 0);
             var addr_buf: [42]u8 = undefined;
-            addr_buf[0] = '0';
-            addr_buf[1] = 'x';
-            const hex_chars = "0123456789abcdef";
-            for (signer.address, 0..) |b, i| {
-                addr_buf[2 + i * 2] = hex_chars[b >> 4];
-                addr_buf[2 + i * 2 + 1] = hex_chars[b & 0xf];
-            }
+            _ = signer.addressHex(&addr_buf);
             if (w.format == .json) {
                 try w.jsonFmt("{{\"status\":\"imported\",\"name\":\"{s}\",\"address\":\"{s}\"}}", .{ name, addr_buf });
             } else {
@@ -343,12 +357,11 @@ pub fn approveAgent(allocator: std.mem.Allocator, w: *Writer, config: Config, a:
         try w.print("  {s}\n", .{url});
         return error.MissingArgument;
     };
-    const key = config.key_hex orelse return error.MissingKey;
-    const signer = Signer.fromHex(key) catch return error.MissingKey;
+    const auth = try getWriteAuth(w, config);
     var client = switch (config.chain) { .mainnet => Client.mainnet(allocator), .testnet => Client.testnet(allocator) };
     defer client.deinit();
     const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
-    var result = client.approveAgent(signer, agent_addr, a.agent_name, nonce) catch |e| {
+    var result = client.approveAgent(auth.signer, agent_addr, a.agent_name, nonce) catch |e| {
         return failFmt(w, "approve failed: {s}", .{@errorName(e)});
     };
     defer result.deinit();
@@ -1166,7 +1179,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
 
     const resolved = try resolveAsset(allocator, &client, a.coin);
     const asset = resolved.index;
@@ -1209,9 +1222,9 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     // For spot orders, derive @index from resolved asset for book lookup
     var book_idx_buf: [16]u8 = undefined;
     var book_coin_upper: [16]u8 = undefined;
-    const book_coin = if (asset > 10000)
+    const book_coin = if (asset > 10000 and isSpotAsset(asset))
         (std.fmt.bufPrint(&book_idx_buf, "@{d}", .{asset - 10000}) catch a.coin)
-    else if (asset == 10000)
+    else if (asset == 10000 and isSpotAsset(asset))
         upperCoin(a.coin, &book_coin_upper) // PURR/USDC (index 0) uses pair name
     else
         a.coin;
@@ -1247,7 +1260,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
 
     // Round to valid tick size
     const limit_px = if (resolved.sz_decimals >= 0) blk: {
-        const pt = if (asset >= 10000)
+        const pt = if (isSpotAsset(asset))
             tick_mod.PriceTick.forSpot(resolved.sz_decimals)
         else
             tick_mod.PriceTick.forPerp(resolved.sz_decimals);
@@ -1368,7 +1381,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     var nonce_handler = response.NonceHandler.init();
     const nonce = nonce_handler.next();
 
-    var result = try client.place(signer, batch, nonce, null, null);
+    var result = try client.place(auth.signer, batch, nonce, null, null);
     defer result.deinit();
 
     if (w.format == .json) {
@@ -1420,38 +1433,92 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
     var nonce_handler = response.NonceHandler.init();
-    const nonce = nonce_handler.next();
 
     if (a.all) {
-        const sc = types.ScheduleCancel{ .time = null };
-        var result = try client.scheduleCancel(signer, sc, nonce, null, null);
-        defer result.deinit();
+        var orders_typed = try client.getOpenOrders(auth.address(), "ALL_DEXS");
+        defer orders_typed.deinit();
+
+        var cancels: [64]types.Cancel = undefined;
+        const CoinAsset = struct { coin: []const u8, asset: usize };
+        var asset_cache: [64]CoinAsset = undefined;
+        var asset_cache_len: usize = 0;
+        var total_cancelled: usize = 0;
+        var batch_count: usize = 0;
+        var batch_len: usize = 0;
+
+        for (orders_typed.value) |order| {
+            const asset = blk: {
+                for (asset_cache[0..asset_cache_len]) |entry| {
+                    if (std.ascii.eqlIgnoreCase(entry.coin, order.coin)) break :blk entry.asset;
+                }
+                const resolved = (try resolveAsset(allocator, &client, order.coin)).index;
+                if (asset_cache_len < asset_cache.len) {
+                    asset_cache[asset_cache_len] = .{ .coin = order.coin, .asset = resolved };
+                    asset_cache_len += 1;
+                }
+                break :blk resolved;
+            };
+            cancels[batch_len] = .{ .asset = asset, .oid = order.oid };
+            batch_len += 1;
+
+            if (batch_len == cancels.len) {
+                var result = try client.cancel(auth.signer, .{ .cancels = cancels[0..batch_len] }, nonce_handler.next(), null, null);
+                defer result.deinit();
+                if (!try result.isOk()) {
+                    if (w.format == .json) {
+                        try w.jsonFmt("{{\"status\":\"error\",\"cancelled\":{d},\"batches\":{d},\"response\":{s}}}", .{ total_cancelled, batch_count, result.body });
+                        return;
+                    }
+                    try w.fail("cancel-all failed");
+                    try w.print("{s}\n", .{result.body});
+                    return error.CommandFailed;
+                }
+                total_cancelled += batch_len;
+                batch_count += 1;
+                batch_len = 0;
+            }
+        }
+
+        if (batch_len > 0) {
+            var result = try client.cancel(auth.signer, .{ .cancels = cancels[0..batch_len] }, nonce_handler.next(), null, null);
+            defer result.deinit();
+            if (!try result.isOk()) {
+                if (w.format == .json) {
+                    try w.jsonFmt("{{\"status\":\"error\",\"cancelled\":{d},\"batches\":{d},\"response\":{s}}}", .{ total_cancelled, batch_count, result.body });
+                    return;
+                }
+                try w.fail("cancel-all failed");
+                try w.print("{s}\n", .{result.body});
+                return error.CommandFailed;
+            }
+            total_cancelled += batch_len;
+            batch_count += 1;
+        }
 
         if (w.format == .json) {
-            try w.jsonRaw(result.body);
+            try w.jsonFmt("{{\"status\":\"ok\",\"cancelled\":{d},\"batches\":{d}}}", .{ total_cancelled, batch_count });
             return;
         }
 
-        const ok = try result.isOk();
-        if (ok) {
-            try w.success("All orders cancelled");
-        } else {
-            try w.fail("cancel-all failed");
-            try w.print("{s}\n", .{result.body});
-            return error.CommandFailed;
+        if (total_cancelled == 0) {
+            try w.print("no open orders\n", .{});
+            return;
         }
+        var buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "{d} orders cancelled", .{total_cancelled}) catch "orders cancelled";
+        try w.success(msg);
         return;
     }
 
-    const coin = a.coin orelse return error.MissingArgument;
-    const asset = (try resolveAsset(allocator, &client, coin)).index;
+    const nonce = nonce_handler.next();
 
     // cancel ETH (no OID, no CLOID) → cancel all orders for this coin
     if (a.oid == null and a.cloid == null) {
-        const addr = config.getAddress() orelse config.requireAddress() catch return error.MissingAddress;
-        var orders_typed = try client.getOpenOrders(addr, null);
+        const coin = a.coin orelse return error.MissingArgument;
+        const asset = (try resolveAsset(allocator, &client, coin)).index;
+        var orders_typed = try client.getOpenOrders(auth.address(), "ALL_DEXS");
         defer orders_typed.deinit();
 
         // Collect OIDs matching this coin
@@ -1475,7 +1542,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         }
 
         const batch = types.BatchCancel{ .cancels = cancels[0..cancel_count] };
-        var result = try client.cancel(signer, batch, nonce, null, null);
+        var result = try client.cancel(auth.signer, batch, nonce, null, null);
         defer result.deinit();
 
         if (w.format == .json) {
@@ -1496,6 +1563,8 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     }
 
     if (a.cloid) |cloid_hex| {
+        const coin = a.coin orelse return error.MissingArgument;
+        const asset = (try resolveAsset(allocator, &client, coin)).index;
         var cloid: types.Cloid = types.ZERO_CLOID;
         const hex_str = if (cloid_hex.len >= 2 and cloid_hex[0] == '0' and cloid_hex[1] == 'x') cloid_hex[2..] else cloid_hex;
         if (hex_str.len != 32) return error.InvalidArgument;
@@ -1508,7 +1577,7 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
             .cancels = &[_]types.CancelByCloid{cancel_cloid},
         };
 
-        var result = try client.cancelByCloid(signer, batch_cloid, nonce, null, null);
+        var result = try client.cancelByCloid(auth.signer, batch_cloid, nonce, null, null);
         defer result.deinit();
 
         if (w.format == .json) {
@@ -1529,13 +1598,23 @@ pub fn cancelOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
 
     const oid_str = a.oid orelse return error.MissingArgument;
     const oid = std.fmt.parseInt(u64, oid_str, 10) catch return error.Overflow;
+    const asset = if (a.coin) |coin|
+        (try resolveAsset(allocator, &client, coin)).index
+    else blk: {
+        var orders_typed = try client.getOpenOrders(auth.address(), "ALL_DEXS");
+        defer orders_typed.deinit();
+        for (orders_typed.value) |order| {
+            if (order.oid == oid) break :blk (try resolveAsset(allocator, &client, order.coin)).index;
+        }
+        return failFmt(w, "order {d} not found in open orders", .{oid});
+    };
 
     const cancel = types.Cancel{ .asset = asset, .oid = oid };
     const batch = types.BatchCancel{
         .cancels = &[_]types.Cancel{cancel},
     };
 
-    var result = try client.cancel(signer, batch, nonce, null, null);
+    var result = try client.cancel(auth.signer, batch, nonce, null, null);
     defer result.deinit();
 
     if (w.format == .json) {
@@ -1572,16 +1651,16 @@ pub fn sendAsset(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
     const now: u64 = @intCast(std.time.milliTimestamp());
 
     const is_usdc = std.ascii.eqlIgnoreCase(a.token, "USDC");
     const is_simple = is_usdc and std.mem.eql(u8, a.from, "perp") and std.mem.eql(u8, a.to, "perp") and a.subaccount == null;
 
-    const dest = a.destination orelse config.getAddress() orelse return error.MissingAddress;
+    const dest = a.destination orelse auth.address();
 
     if (is_simple) {
-        var result = try client.sendUsdc(signer, dest, a.amount, now);
+        var result = try client.sendUsdc(auth.signer, dest, a.amount, now);
         defer result.deinit();
 
         if (w.format == .json) {
@@ -1603,7 +1682,7 @@ pub fn sendAsset(allocator: std.mem.Allocator, w: *Writer, config: Config, a: ar
         const dest_dex = if (std.mem.eql(u8, a.to, "perp")) "" else if (std.mem.eql(u8, a.to, "spot")) "spot" else a.to;
         const sub = a.subaccount orelse "";
 
-        var result = try client.sendAsset(signer, dest, source_dex, dest_dex, a.token, a.amount, sub, now);
+        var result = try client.sendAsset(auth.signer, dest, source_dex, dest_dex, a.token, a.amount, sub, now);
         defer result.deinit();
 
         if (w.format == .json) {
@@ -1629,7 +1708,7 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
     var nonce_handler = response.NonceHandler.init();
     const nonce = nonce_handler.next();
 
@@ -1654,7 +1733,7 @@ pub fn modifyOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         .modifies = &[_]types.Modify{modify_req},
     };
 
-    var result = try client.modify(signer, batch, nonce, null, null);
+    var result = try client.modify(auth.signer, batch, nonce, null, null);
     defer result.deinit();
 
     if (w.format == .json) {
@@ -2450,6 +2529,11 @@ fn upperCoin(coin: []const u8, buf: *[16]u8) []const u8 {
     return buf[0..len];
 }
 
+fn isSpotAsset(asset: anytype) bool {
+    const a: u64 = @intCast(asset);
+    return a >= 10000 and a < 100000;
+}
+
 const ResolvedAsset = struct {
     index: usize,
     sz_decimals: i32, // -1 = unknown (raw index input)
@@ -2483,14 +2567,30 @@ fn resolveAsset(_: std.mem.Allocator, client: *Client, coin: []const u8) !Resolv
     if (std.mem.indexOf(u8, coin, ":")) |colon| {
         const dex_name = coin[0..colon];
         const symbol = coin[colon + 1 ..];
+        var perp_dexes = try client.getPerpDexs();
+        defer perp_dexes.deinit();
+        var dex_index: ?u32 = null;
+        for (perp_dexes.value) |dex| {
+            if (std.ascii.eqlIgnoreCase(dex.name, dex_name)) {
+                dex_index = dex.index;
+                break;
+            }
+        }
+        if (dex_index == null) return error.AssetNotFound;
         var typed = try client.getPerps(dex_name);
         defer typed.deinit();
         for (typed.value.universe, 0..) |pm, i| {
             if (std.ascii.eqlIgnoreCase(pm.name, symbol))
-                return .{ .index = i, .sz_decimals = @intCast(pm.szDecimals) };
+                return .{
+                    .index = if (dex_index.? == 0) i else @as(usize, 100000 + dex_index.? * 10000 + @as(u32, @intCast(i))),
+                    .sz_decimals = @intCast(pm.szDecimals),
+                };
             if (std.mem.indexOf(u8, pm.name, ":")) |nc| {
                 if (std.ascii.eqlIgnoreCase(pm.name[nc + 1 ..], symbol))
-                    return .{ .index = i, .sz_decimals = @intCast(pm.szDecimals) };
+                    return .{
+                        .index = if (dex_index.? == 0) i else @as(usize, 100000 + dex_index.? * 10000 + @as(u32, @intCast(i))),
+                        .sz_decimals = @intCast(pm.szDecimals),
+                    };
             }
         }
         return error.AssetNotFound;
@@ -3172,7 +3272,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     }
 
     // Set leverage
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
     const lev = std.fmt.parseInt(u32, a.leverage.?, 10) catch return error.InvalidFlag;
     const nonce: u64 = @intCast(std.time.milliTimestamp());
 
@@ -3181,7 +3281,7 @@ pub fn setLeverage(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
         .is_cross = a.cross,
         .leverage = lev,
     };
-    var result = try client.updateLeverage(signer, ul, nonce, null, null);
+    var result = try client.updateLeverage(auth.signer, ul, nonce, null, null);
     defer result.deinit();
 
     if (try result.isOk()) {
@@ -3400,9 +3500,9 @@ pub fn referralCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
                 try w.err("usage: hlz referral set <CODE>");
                 return error.MissingArgument;
             };
-            const signer = try config.getSigner();
+            const auth = try getWriteAuth(w, config);
             const nonce: u64 = @intCast(std.time.milliTimestamp());
-            var result = try client.setReferrer(signer, .{ .code = code }, nonce, null, null);
+            var result = try client.setReferrer(auth.signer, .{ .code = code }, nonce, null, null);
             defer result.deinit();
 
             if (try result.isOk()) {
@@ -3424,7 +3524,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     var client = makeClient(allocator, config);
     defer client.deinit();
 
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
     const resolved = try resolveAsset(allocator, &client, a.coin);
     const asset = resolved.index;
     const total_sz = std.fmt.parseFloat(f64, a.size) catch return error.Overflow;
@@ -3446,9 +3546,9 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     // Resolve spot @index for book lookup
     var twap_book_buf: [16]u8 = undefined;
     var twap_coin_upper: [16]u8 = undefined;
-    const twap_book_coin = if (asset > 10000)
+    const twap_book_coin = if (asset > 10000 and isSpotAsset(asset))
         (std.fmt.bufPrint(&twap_book_buf, "@{d}", .{asset - 10000}) catch a.coin)
-    else if (asset == 10000)
+    else if (asset == 10000 and isSpotAsset(asset))
         upperCoin(a.coin, &twap_coin_upper)
     else
         a.coin;
@@ -3478,7 +3578,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         const px_str = slippageFmt(&px_buf, slip_px);
         const limit_px_raw = Decimal.fromString(px_str) catch continue;
         const limit_px = if (resolved.sz_decimals >= 0) blk: {
-            const pt = if (asset >= 10000)
+            const pt = if (isSpotAsset(asset))
                 hlz.hypercore.tick.PriceTick.forSpot(resolved.sz_decimals)
             else
                 hlz.hypercore.tick.PriceTick.forPerp(resolved.sz_decimals);
@@ -3506,7 +3606,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         var nonce_handler = response.NonceHandler.init();
         const nonce = nonce_handler.next();
 
-        var result = client.place(signer, batch_order, nonce, null, null) catch |e| {
+        var result = client.place(auth.signer, batch_order, nonce, null, null) catch |e| {
             if (w.format == .json) {
                 try w.jsonFmt("{{\"event\":\"error\",\"slice\":{d},\"error\":\"{s}\"}}", .{ i + 1, @errorName(e) });
             } else {
@@ -3661,7 +3761,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
 
     var client = makeClient(allocator, config);
     defer client.deinit();
-    const signer = try config.getSigner();
+    const auth = try getWriteAuth(w, config);
 
     // Parse each order string into OrderRequest
     var batch_items: [16]types.OrderRequest = undefined;
@@ -3718,9 +3818,9 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
             // Market order — resolve spot @index for book lookup
             var batch_book_buf: [16]u8 = undefined;
             var batch_coin_upper: [16]u8 = undefined;
-            const batch_book_coin = if (asset_idx > 10000)
+            const batch_book_coin = if (asset_idx > 10000 and isSpotAsset(asset_idx))
                 (std.fmt.bufPrint(&batch_book_buf, "@{d}", .{asset_idx - 10000}) catch coin)
-            else if (asset_idx == 10000)
+            else if (asset_idx == 10000 and isSpotAsset(asset_idx))
                 upperCoin(coin, &batch_coin_upper)
             else
                 coin;
@@ -3734,7 +3834,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
 
         // Round to valid tick size
         if (resolved_asset.sz_decimals >= 0) {
-            const pt = if (asset_idx >= 10000)
+            const pt = if (isSpotAsset(asset_idx))
                 hlz.hypercore.tick.PriceTick.forSpot(resolved_asset.sz_decimals)
             else
                 hlz.hypercore.tick.PriceTick.forPerp(resolved_asset.sz_decimals);
@@ -3765,7 +3865,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
     var nonce_handler = response.NonceHandler.init();
     const nonce = nonce_handler.next();
 
-    var result = try client.place(signer, batch_order, nonce, null, null);
+    var result = try client.place(auth.signer, batch_order, nonce, null, null);
     defer result.deinit();
 
     if (w.format == .json) {

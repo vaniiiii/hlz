@@ -437,6 +437,8 @@ fn parseCancel(args: []const []const u8) CancelArgs {
         } else if (std.mem.eql(u8, a, "--cloid") and i + 1 < args.len) {
             i += 1;
             result.cloid = args[i];
+        } else if (result.coin == null and result.oid == null and std.fmt.parseInt(u64, a, 10) catch null != null) {
+            result.oid = a;
         } else if (result.coin == null) {
             result.coin = a;
         } else {

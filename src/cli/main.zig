@@ -9,7 +9,7 @@ const commands = @import("commands.zig");
 const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
-const VERSION = "0.4.6";
+const VERSION = "0.4.7";
 
 // Exit codes (documented in --help, stable contract)
 const EXIT_OK: u8 = 0;
@@ -104,7 +104,7 @@ pub fn main() !void {
 
 fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
     const code: u8 = switch (e) {
-        error.MissingKey, error.MissingAddress => EXIT_AUTH,
+        error.MissingKey, error.MissingAddress, error.AddressMismatch => EXIT_AUTH,
         error.MissingArgument, error.InvalidFlag => EXIT_USAGE,
         error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable => EXIT_NETWORK,
         else => EXIT_ERROR,
@@ -120,6 +120,7 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
         const hint = switch (e) {
             error.MissingKey => "set HL_KEY env var or pass --key",
             error.MissingAddress => "set HL_ADDRESS env var or pass --address",
+            error.AddressMismatch => "use a signer/key that matches --address, or omit --address for write commands",
             error.MissingArgument => "run `hlz help` for usage",
             error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
             error.CommandFailed => "",
@@ -133,7 +134,7 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
             \\{{"v":1,"status":"error","cmd":"{s}","error":"{s}","message":"{s}","retryable":{s},"hint":"{s}","timing_ms":{d}}}
         , .{ cmd, name, msg, if (retryable) "true" else "false", hint, ms }) catch return;
         w.rawJson(s) catch {};
-    } else if (e != error.CommandFailed) {
+    } else if (e != error.CommandFailed and e != error.AddressMismatch) {
         w.errFmt("{s}: {s}", .{ cmd, @errorName(e) }) catch {};
     }
 

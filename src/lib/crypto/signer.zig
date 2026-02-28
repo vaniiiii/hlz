@@ -94,6 +94,18 @@ pub const Signer = struct {
         return init(key);
     }
 
+    /// Format signer address as lowercase "0x..." hex into a fixed buffer.
+    pub fn addressHex(self: Signer, buf: *[42]u8) []const u8 {
+        buf[0] = '0';
+        buf[1] = 'x';
+        const chars = "0123456789abcdef";
+        for (self.address, 0..) |b, i| {
+            buf[2 + i * 2] = chars[b >> 4];
+            buf[2 + i * 2 + 1] = chars[b & 0xf];
+        }
+        return buf[0..];
+    }
+
     /// Sign a 32-byte message hash. Returns deterministic signature (RFC 6979).
     pub fn sign(self: Signer, hash: Hash) SignError!Signature {
         const z = reduceToScalar(Secp256k1.Fe.encoded_length, hash);

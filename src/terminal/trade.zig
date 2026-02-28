@@ -8,6 +8,7 @@ const response = hlz.hypercore.response;
 const resp_types = response;
 const Decimal = hlz.math.decimal.Decimal;
 const signer_mod = hlz.crypto.signer;
+const tick_mod = hlz.hypercore.tick;
 const App = @import("App");
 const BufMod = @import("Buffer");
 const Chart = @import("Chart");
@@ -24,24 +25,30 @@ pub const Config = struct {
     derived_addr_buf: [42]u8 = undefined,
 
     pub fn getSigner(self: Config) !Signer { return Signer.fromHex(self.key_hex orelse return error.MissingKey); }
+    pub fn signerAddress(self: Config, buf: *[42]u8) ![]const u8 {
+        const signer = try self.getSigner();
+        return signer.addressHex(buf);
+    }
     pub fn getAddress(self: *Config) ?[]const u8 {
         if (self.address) |a| return a;
         if (self.key_hex) |hex| {
             const signer = Signer.fromHex(hex) catch return null;
-            const addr = signer.address;
-            self.derived_addr_buf[0] = '0';
-            self.derived_addr_buf[1] = 'x';
-            const chars = "0123456789abcdef";
-            for (addr, 0..) |b, i| {
-                self.derived_addr_buf[2 + i * 2] = chars[b >> 4];
-                self.derived_addr_buf[2 + i * 2 + 1] = chars[b & 0xf];
-            }
-            self.address = &self.derived_addr_buf;
-            return &self.derived_addr_buf;
+            self.address = signer.addressHex(&self.derived_addr_buf);
+            return self.address;
         }
         return null;
     }
 };
+
+fn signerForWrite(config: *const Config) !Signer {
+    const signer = try config.getSigner();
+    if (config.address) |addr| {
+        var buf: [42]u8 = undefined;
+        const signer_addr = signer.addressHex(&buf);
+        if (!std.ascii.eqlIgnoreCase(addr, signer_addr)) return error.AddressMismatch;
+    }
+    return signer;
+}
 const Buffer = BufMod;
 const Style = Buffer.Style;
 const Rect = Buffer.Rect;
@@ -85,6 +92,100 @@ const ActionId = enum(u8) { set_leverage, cancel_all, close_selected };
 const ActionMode = enum(u2) { list, confirm, number };
 const LEVERAGE_MIN: u32 = 1;
 const LEVERAGE_MAX: u32 = 125;
+
+const ResolvedAsset = struct {
+    index: u32,
+    sz_decimals: i32,
+    max_leverage: u32,
+};
+
+fn isSpotAsset(asset: anytype) bool {
+    const a: u64 = @intCast(asset);
+    return a >= 10000 and a < 100000;
+}
+
+fn resolveAsset(client: *Client, coin: []const u8) !ResolvedAsset {
+    if (std.fmt.parseInt(u32, coin, 10) catch null) |idx| {
+        return .{ .index = idx, .sz_decimals = -1, .max_leverage = LEVERAGE_MAX };
+    }
+
+    if (std.mem.indexOf(u8, coin, "/") != null) {
+        var typed = try client.getSpotMeta();
+        defer typed.deinit();
+        const tokens = typed.value.tokens;
+        for (typed.value.universe) |pair| {
+            if (pair.tokens[0] >= tokens.len or pair.tokens[1] >= tokens.len) continue;
+            if (std.ascii.eqlIgnoreCase(pair.name, coin)) {
+                return .{
+                    .index = @intCast(10000 + pair.index),
+                    .sz_decimals = @intCast(tokens[pair.tokens[0]].szDecimals),
+                    .max_leverage = 1,
+                };
+            }
+        }
+        return error.AssetNotFound;
+    }
+
+    if (std.mem.indexOf(u8, coin, ":")) |colon| {
+        const dex_name = coin[0..colon];
+        const symbol = coin[colon + 1 ..];
+        var dexes = try client.getPerpDexs();
+        defer dexes.deinit();
+        var dex_index: ?u32 = null;
+        for (dexes.value) |dex| {
+            if (std.ascii.eqlIgnoreCase(dex.name, dex_name)) {
+                dex_index = dex.index;
+                break;
+            }
+        }
+        if (dex_index == null) return error.AssetNotFound;
+
+        var typed = try client.getPerps(dex_name);
+        defer typed.deinit();
+        for (typed.value.universe, 0..) |pm, idx| {
+            if (std.ascii.eqlIgnoreCase(pm.name, symbol)) {
+                return .{
+                    .index = if (dex_index.? == 0) @intCast(idx) else 100000 + dex_index.? * 10000 + @as(u32, @intCast(idx)),
+                    .sz_decimals = @intCast(pm.szDecimals),
+                    .max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX)),
+                };
+            }
+            if (std.mem.indexOf(u8, pm.name, ":")) |nc| {
+                if (std.ascii.eqlIgnoreCase(pm.name[nc + 1 ..], symbol)) {
+                    return .{
+                        .index = if (dex_index.? == 0) @intCast(idx) else 100000 + dex_index.? * 10000 + @as(u32, @intCast(idx)),
+                        .sz_decimals = @intCast(pm.szDecimals),
+                        .max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX)),
+                    };
+                }
+            }
+        }
+        return error.AssetNotFound;
+    }
+
+    var typed = try client.getPerps(null);
+    defer typed.deinit();
+    for (typed.value.universe, 0..) |pm, idx| {
+        if (std.ascii.eqlIgnoreCase(pm.name, coin)) {
+            return .{
+                .index = @intCast(idx),
+                .sz_decimals = @intCast(pm.szDecimals),
+                .max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX)),
+            };
+        }
+        if (std.mem.indexOf(u8, pm.name, ":")) |colon| {
+            if (std.ascii.eqlIgnoreCase(pm.name[colon + 1 ..], coin)) {
+                return .{
+                    .index = @intCast(idx),
+                    .sz_decimals = @intCast(pm.szDecimals),
+                    .max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX)),
+                };
+            }
+        }
+    }
+
+    return error.AssetNotFound;
+}
 
 const MAX_ROWS = 32;
 const MAX_COLS = 8;
@@ -1504,9 +1605,26 @@ const Orders = struct {
     }
 
     fn execute(order: *OrderState, client: *Client, config: *const Config, shared: *Shared) void {
-        const signer = config.getSigner() catch { order.setStatus("No key configured", true); return; };
+        const signer = signerForWrite(config) catch |e| {
+            order.setStatus(if (e == error.AddressMismatch) "Address does not match signer" else "No key configured", true);
+            return;
+        };
         const snap = Snapshot.take(shared);
-        const asset: u32 = @intCast(snap.asset_index orelse { order.setStatus("Asset not resolved", true); return; });
+        var coin_buf: [16]u8 = undefined;
+        const coin = blk: {
+            shared.mu.lock();
+            defer shared.mu.unlock();
+            if (shared.coin_len == 0) {
+                order.setStatus("Asset not resolved", true);
+                return;
+            }
+            @memcpy(coin_buf[0..shared.coin_len], shared.coin_buf[0..shared.coin_len]);
+            break :blk coin_buf[0..shared.coin_len];
+        };
+        const resolved = resolveAsset(client, coin) catch {
+            order.setStatus("Asset not resolved", true);
+            return;
+        };
         const sz_str = order.sizeStr();
         if (sz_str.len == 0) { order.setStatus("Enter size first", true); return; }
         const sz = std.fmt.parseFloat(f64, sz_str) catch { order.setStatus("Invalid size", true); return; };
@@ -1514,8 +1632,20 @@ const Orders = struct {
 
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const tif: types.TimeInForce = if (order.order_type == .market) .FrontendMarket else .Gtc;
-        const sz_dec = Decimal.fromString(sz_str) catch { order.setStatus("Invalid size format", true); return; };
-        const px_dec = if (order.order_type == .market) blk: {
+        const sz_raw = Decimal.fromString(sz_str) catch { order.setStatus("Invalid size format", true); return; };
+        const sz_dec = if (resolved.sz_decimals >= 0) blk: {
+            const sd: u8 = @intCast(resolved.sz_decimals);
+            const truncated = sz_raw.truncDp(sd);
+            if (truncated.isZero()) {
+                var sb: [48]u8 = undefined;
+                const msg = std.fmt.bufPrint(&sb, "Size too small for {d} decimals", .{sd}) catch "Size too small";
+                order.setStatus(msg, true);
+                return;
+            }
+            break :blk truncated;
+        } else sz_raw;
+
+        const px_raw = if (order.order_type == .market) blk: {
             const bbo_str = if (order.side == .buy and snap.n_asks > 0)
                 snap.asks[0].px()
             else if (order.side == .sell and snap.n_bids > 0)
@@ -1528,7 +1658,30 @@ const Orders = struct {
             if (p.len == 0) { order.setStatus("Enter price first", true); return; }
             break :blk Decimal.fromString(p) catch { order.setStatus("Invalid price format", true); return; };
         };
-        const ord = types.OrderRequest{ .asset = asset, .is_buy = order.side == .buy, .limit_px = px_dec, .sz = sz_dec, .reduce_only = false, .order_type = .{ .limit = .{ .tif = tif } }, .cloid = makeCloid(nonce) };
+        const px_dec = if (resolved.sz_decimals >= 0) blk: {
+            const pt = if (isSpotAsset(resolved.index))
+                tick_mod.PriceTick.forSpot(resolved.sz_decimals)
+            else
+                tick_mod.PriceTick.forPerp(resolved.sz_decimals);
+            break :blk pt.round(px_raw) orelse px_raw;
+        } else px_raw;
+
+        const notional = decToF64(sz_dec) * decToF64(px_dec);
+        if (notional > 0 and notional < 10.0) {
+            var lot_mult: f64 = 1.0;
+            const sd: u8 = if (resolved.sz_decimals >= 0) @intCast(resolved.sz_decimals) else 4;
+            for (0..sd) |_| lot_mult *= 10.0;
+            const min_sz = @ceil(10.0 / decToF64(px_dec) * lot_mult) / lot_mult;
+            var min_buf: [32]u8 = undefined;
+            var status_buf: [48]u8 = undefined;
+            const msg = std.fmt.bufPrint(&status_buf, "Need at least {s} {s}", .{
+                smartFmt(&min_buf, min_sz), coin,
+            }) catch "Order below $10 minimum";
+            order.setStatus(msg, true);
+            return;
+        }
+
+        const ord = types.OrderRequest{ .asset = resolved.index, .is_buy = order.side == .buy, .limit_px = px_dec, .sz = sz_dec, .reduce_only = false, .order_type = .{ .limit = .{ .tif = tif } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
         var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
             order.setStatus("Order failed (network)", true);
@@ -1548,7 +1701,10 @@ const Orders = struct {
 
     /// Cancel selected order (from orders tab)
     fn cancelOrder(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
-        const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
+        const signer = signerForWrite(config) catch |e| {
+            ui.order.setStatus(if (e == error.AddressMismatch) "Address does not match signer" else "No key configured", true);
+            return;
+        };
         const snap = Snapshot.take(shared);
         if (ui.selected_row >= snap.open_orders.n_rows) { ui.order.setStatus("No order selected", true); return; }
         const oid_str = snap.open_orders.get(ui.selected_row, 5); // OID column
@@ -1556,9 +1712,11 @@ const Orders = struct {
         if (oid_str.len == 0 or coin.len == 0) { ui.order.setStatus("Invalid order", true); return; }
         const oid = std.fmt.parseInt(u64, oid_str, 10) catch { ui.order.setStatus("Invalid OID", true); return; };
 
-        // Resolve asset for cancel (we need the asset index for this coin)
-        const asset: u32 = blk: { shared.mu.lock(); defer shared.mu.unlock(); break :blk @intCast(shared.asset_index orelse { ui.order.setStatus("Asset not resolved", true); return; }); };
-        const cancel = types.Cancel{ .asset = asset, .oid = oid };
+        const asset = resolveAsset(client, coin) catch {
+            ui.order.setStatus("Asset not resolved", true);
+            return;
+        };
+        const cancel = types.Cancel{ .asset = asset.index, .oid = oid };
         const arr = [1]types.Cancel{cancel};
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         var result = client.cancel(signer, .{ .cancels = &arr }, nonce, null, null) catch {
@@ -1572,25 +1730,24 @@ const Orders = struct {
     }
 
     fn cancelAll(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
-        const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
+        const signer = signerForWrite(config) catch |e| {
+            ui.order.setStatus(if (e == error.AddressMismatch) "Address does not match signer" else "No key configured", true);
+            return;
+        };
         const snap = Snapshot.take(shared);
-        const asset: u32 = blk: {
-            shared.mu.lock();
-            defer shared.mu.unlock();
-            break :blk @intCast(shared.asset_index orelse {
-                ui.order.setStatus("Asset not resolved", true);
-                return;
-            });
+        const coin = ui.coin[0..ui.coin_len];
+        const asset = resolveAsset(client, coin) catch {
+            ui.order.setStatus("Asset not resolved", true);
+            return;
         };
 
         var cancels: [MAX_ROWS]types.Cancel = undefined;
         var n: usize = 0;
-        const coin = ui.coin[0..ui.coin_len];
         for (0..snap.open_orders.n_rows) |r| {
             if (!std.ascii.eqlIgnoreCase(snap.open_orders.get(r, 0), coin)) continue;
             const oid_str = snap.open_orders.get(r, 5);
             const oid = std.fmt.parseInt(u64, oid_str, 10) catch continue;
-            cancels[n] = .{ .asset = asset, .oid = oid };
+            cancels[n] = .{ .asset = asset.index, .oid = oid };
             n += 1;
             if (n >= MAX_ROWS) break;
         }
@@ -1614,17 +1771,30 @@ const Orders = struct {
     }
 
     fn closePosition(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
-        const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
+        const signer = signerForWrite(config) catch |e| {
+            ui.order.setStatus(if (e == error.AddressMismatch) "Address does not match signer" else "No key configured", true);
+            return;
+        };
         const snap = Snapshot.take(shared);
         if (ui.selected_row >= snap.positions.n_rows) { ui.order.setStatus("No position selected", true); return; }
+        const coin = snap.positions.get(ui.selected_row, 0); // Coin column
         const sz_str = snap.positions.get(ui.selected_row, 2); // Size column
         const side_str = snap.positions.get(ui.selected_row, 1); // Side column
-        if (sz_str.len == 0) { ui.order.setStatus("Invalid position", true); return; }
+        if (coin.len == 0 or sz_str.len == 0) { ui.order.setStatus("Invalid position", true); return; }
 
-        const asset: u32 = @intCast(snap.asset_index orelse { ui.order.setStatus("Asset not resolved", true); return; });
-        const sz_dec = Decimal.fromString(sz_str) catch { ui.order.setStatus("Invalid size", true); return; };
+        const resolved = resolveAsset(client, coin) catch {
+            ui.order.setStatus("Asset not resolved", true);
+            return;
+        };
+        const sz_raw = Decimal.fromString(sz_str) catch { ui.order.setStatus("Invalid size", true); return; };
+        const sz_dec = if (resolved.sz_decimals >= 0) blk: {
+            const sd: u8 = @intCast(resolved.sz_decimals);
+            const truncated = sz_raw.truncDp(sd);
+            if (truncated.isZero()) { ui.order.setStatus("Position size too small", true); return; }
+            break :blk truncated;
+        } else sz_raw;
         const is_long = std.mem.eql(u8, side_str, "LONG");
-        const px_dec: Decimal = blk: {
+        const px_raw: Decimal = blk: {
             const bbo_str = if (is_long and snap.n_bids > 0)
                 snap.bids[0].px()
             else if (!is_long and snap.n_asks > 0)
@@ -1636,8 +1806,15 @@ const Orders = struct {
             const bbo_px = Decimal.fromString(bbo_str) catch { ui.order.setStatus("Invalid book price", true); return; };
             break :blk bbo_px.mul(if (is_long) SLIPPAGE_SELL else SLIPPAGE_BUY);
         };
+        const px_dec = if (resolved.sz_decimals >= 0) blk: {
+            const pt = if (isSpotAsset(resolved.index))
+                tick_mod.PriceTick.forSpot(resolved.sz_decimals)
+            else
+                tick_mod.PriceTick.forPerp(resolved.sz_decimals);
+            break :blk pt.round(px_raw) orelse px_raw;
+        } else px_raw;
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
-        const ord = types.OrderRequest{ .asset = asset, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = makeCloid(nonce) };
+        const ord = types.OrderRequest{ .asset = resolved.index, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
         var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
             ui.order.setStatus("Close failed (network)", true);
@@ -1650,7 +1827,10 @@ const Orders = struct {
     }
 
     fn updateLeverage(ui: *UiState, client: *Client, config: *const Config, shared: *Shared) void {
-        const signer = config.getSigner() catch { ui.order.setStatus("No key configured", true); return; };
+        const signer = signerForWrite(config) catch |e| {
+            ui.order.setStatus(if (e == error.AddressMismatch) "Address does not match signer" else "No key configured", true);
+            return;
+        };
         const asset: usize = blk: {
             shared.mu.lock();
             defer shared.mu.unlock();
@@ -1699,33 +1879,11 @@ const Orders = struct {
 
 const Rest = struct {
     fn resolveAssetIndex(client: *Client, coin: []const u8, shared: *Shared) void {
-        // Check if it's a spot pair (contains /)
-        if (std.mem.indexOf(u8, coin, "/") != null) {
-            var typed = client.getSpotMeta() catch return;
-            defer typed.deinit();
-            for (typed.value.universe) |pair| {
-                if (std.ascii.eqlIgnoreCase(pair.name, coin)) {
-                    shared.mu.lock();
-                    defer shared.mu.unlock();
-                    shared.asset_index = @intCast(pair.index);
-                    shared.max_leverage = 1;
-                    return;
-                }
-            }
-        } else {
-            // Perp
-            var typed = client.getPerps(null) catch return;
-            defer typed.deinit();
-            for (typed.value.universe, 0..) |pm, idx| {
-                if (std.ascii.eqlIgnoreCase(pm.name, coin)) {
-                    shared.mu.lock();
-                    defer shared.mu.unlock();
-                    shared.asset_index = idx;
-                    shared.max_leverage = @max(LEVERAGE_MIN, @min(pm.maxLeverage, LEVERAGE_MAX));
-                    return;
-                }
-            }
-        }
+        const resolved = resolveAsset(client, coin) catch return;
+        shared.mu.lock();
+        defer shared.mu.unlock();
+        shared.asset_index = resolved.index;
+        shared.max_leverage = resolved.max_leverage;
     }
 
     fn fetchCandles(client: *Client, coin: []const u8, interval: []const u8, out: *[Chart.MAX_CANDLES]Chart.Candle, count: *usize) void {
@@ -1963,6 +2121,14 @@ fn decToF64(d: Decimal) f64 {
     const m: f64 = @floatFromInt(d.mantissa);
     const s: f64 = std.math.pow(f64, 10.0, @as(f64, @floatFromInt(d.scale)));
     return m / s;
+}
+
+fn smartFmt(buf: []u8, value: f64) []const u8 {
+    const abs = @abs(value);
+    if (abs >= 1000) return std.fmt.bufPrint(buf, "{d:.2}", .{value}) catch "?";
+    if (abs >= 1) return std.fmt.bufPrint(buf, "{d:.4}", .{value}) catch "?";
+    if (abs >= 0.01) return std.fmt.bufPrint(buf, "{d:.6}", .{value}) catch "?";
+    return std.fmt.bufPrint(buf, "{d:.8}", .{value}) catch "?";
 }
 
 fn fmtTimestamp(obj: std.json.Value, key: []const u8, buf: *[10]u8) []const u8 {
