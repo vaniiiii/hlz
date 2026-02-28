@@ -270,6 +270,15 @@ pub const Decimal = struct {
         return .{ .mantissa = m, .scale = dp };
     }
 
+    /// Truncate to dp decimal places (floor toward zero). Never rounds up.
+    pub fn truncDp(self: Decimal, dp: u8) Decimal {
+        if (self.scale <= dp) return self.rescale(dp);
+        const steps = self.scale - dp;
+        var divisor: i128 = 1;
+        for (0..steps) |_| divisor *= 10;
+        return .{ .mantissa = @divTrunc(self.mantissa, divisor), .scale = dp };
+    }
+
     /// Integer floor(log10(abs(value))). Used for tick size calculation.
     /// Returns null for zero.
     pub fn log10Floor(self: Decimal) ?i32 {

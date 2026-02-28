@@ -1167,7 +1167,20 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     const resolved = try resolveAsset(allocator, &client, a.coin);
     const asset = resolved.index;
 
-    const sz = Decimal.fromString(a.size) catch return error.Overflow;
+    const sz_raw = Decimal.fromString(a.size) catch return error.Overflow;
+
+    // Truncate size to valid lot size (floor, never rounds up — user never spends more than intended)
+    const sz = if (resolved.sz_decimals >= 0) blk: {
+        const sd: u8 = @intCast(resolved.sz_decimals);
+        const truncated = sz_raw.truncDp(sd);
+        if (truncated.isZero()) {
+            try w.errFmt("size {s} too small — {s} requires {d} decimal places", .{
+                a.size, a.coin, sd,
+            });
+            return error.CommandFailed;
+        }
+        break :blk truncated;
+    } else sz_raw;
 
     // Trigger order: --trigger-above or --trigger-below
     const is_trigger = a.trigger_px != null;
@@ -1237,6 +1250,27 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
             tick_mod.PriceTick.forPerp(resolved.sz_decimals);
         break :blk pt.round(limit_px_raw) orelse limit_px_raw;
     } else limit_px_raw;
+
+    // Preflight: min notional check (spot: 10 quote units, perp: 10 USD)
+    if (!a.reduce_only) {
+        const sz_f = decToF64(sz);
+        const px_f = decToF64(limit_px);
+        const notional = sz_f * px_f;
+        if (notional > 0 and notional < 10.0) {
+            var lot_mult: f64 = 1.0;
+            const sd: u8 = if (resolved.sz_decimals >= 0) @intCast(resolved.sz_decimals) else 4;
+            for (0..sd) |_| lot_mult *= 10.0;
+            const min_sz = @ceil(10.0 / px_f * lot_mult) / lot_mult;
+            var min_buf: [32]u8 = undefined;
+            const min_str = Decimal.fromString(smartFmt(&min_buf, min_sz)) catch Decimal.ZERO;
+            var min_str_buf: [32]u8 = undefined;
+            const min_display = min_str.truncDp(sd).toString(&min_str_buf) catch "?";
+            try w.errFmt("order value ${d:.2} below $10 minimum — need at least {s} {s}", .{
+                notional, min_display, a.coin,
+            });
+            return error.CommandFailed;
+        }
+    }
 
     const now: u64 = @intCast(std.time.milliTimestamp());
     var cloid = types.ZERO_CLOID;
