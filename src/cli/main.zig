@@ -9,7 +9,7 @@ const commands = @import("commands.zig");
 const trade_mod = @import("trade");
 
 const Style = output_mod.Style;
-const VERSION = "0.4.5";
+const VERSION = "0.4.6";
 
 // Exit codes (documented in --help, stable contract)
 const EXIT_OK: u8 = 0;
@@ -106,15 +106,15 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
     const code: u8 = switch (e) {
         error.MissingKey, error.MissingAddress => EXIT_AUTH,
         error.MissingArgument, error.InvalidFlag => EXIT_USAGE,
-        error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable, error.NetworkError => EXIT_NETWORK,
+        error.ConnectionRefused, error.ConnectionResetByPeer, error.BrokenPipe, error.NetworkUnreachable => EXIT_NETWORK,
         else => EXIT_ERROR,
     };
 
     if (w.format == .json) {
-        var buf: [512]u8 = undefined;
+        var buf: [2048]u8 = undefined;
         const name = @errorName(e);
         const retryable = switch (e) {
-            error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable, error.NetworkError => true,
+            error.ConnectionRefused, error.ConnectionResetByPeer, error.NetworkUnreachable => true,
             else => false,
         };
         const hint = switch (e) {
@@ -124,19 +124,82 @@ fn exit(w: *output_mod.Writer, cmd: []const u8, e: anyerror) void {
             error.AssetNotFound => "check coin name: BTC (perp), PURR/USDC (spot), xyz:BTC (dex)",
             error.CommandFailed => "",
             error.InvalidFlag => "check flag values",
-            error.NetworkError => "check network connection",
             else => "",
         };
+        var msg_buf: [1536]u8 = undefined;
+        const msg = jsonEscape(w.exitMessage() orelse "", &msg_buf);
         const ms = w.elapsedMs();
         const s = std.fmt.bufPrint(&buf,
-            \\{{"v":1,"status":"error","cmd":"{s}","error":"{s}","retryable":{s},"hint":"{s}","timing_ms":{d}}}
-        , .{ cmd, name, if (retryable) "true" else "false", hint, ms }) catch return;
+            \\{{"v":1,"status":"error","cmd":"{s}","error":"{s}","message":"{s}","retryable":{s},"hint":"{s}","timing_ms":{d}}}
+        , .{ cmd, name, msg, if (retryable) "true" else "false", hint, ms }) catch return;
         w.rawJson(s) catch {};
-    } else {
+    } else if (e != error.CommandFailed) {
         w.errFmt("{s}: {s}", .{ cmd, @errorName(e) }) catch {};
     }
 
     std.process.exit(code);
+}
+
+fn jsonEscape(input: []const u8, buf: []u8) []const u8 {
+    var i: usize = 0;
+    for (input) |c| {
+        switch (c) {
+            0x08 => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = 'b';
+                i += 2;
+            },
+            0x09 => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = 't';
+                i += 2;
+            },
+            '"' => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = '"';
+                i += 2;
+            },
+            '\\' => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = '\\';
+                i += 2;
+            },
+            '\n' => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = 'n';
+                i += 2;
+            },
+            0x0c => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = 'f';
+                i += 2;
+            },
+            '\r' => {
+                if (i + 2 > buf.len) break;
+                buf[i] = '\\';
+                buf[i + 1] = 'r';
+                i += 2;
+            },
+            else => {
+                if (c < 0x20) {
+                    if (i + 6 > buf.len) break;
+                    _ = std.fmt.bufPrint(buf[i .. i + 6], "\\u00{x:0>2}", .{c}) catch break;
+                    i += 6;
+                } else {
+                    if (i >= buf.len) break;
+                    buf[i] = c;
+                    i += 1;
+                }
+            },
+        }
+    }
+    return buf[0..i];
 }
 
 fn printVersion(w: *output_mod.Writer) !void {

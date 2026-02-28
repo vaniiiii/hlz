@@ -40,6 +40,8 @@ pub const Writer = struct {
     quiet: bool = false,
     cmd: []const u8 = "",
     start_ns: i128 = 0,
+    exit_msg: [256]u8 = undefined,
+    exit_len: usize = 0,
 
     pub fn init(format: OutputFormat) Writer {
         const is_tty = std.posix.isatty(std.fs.File.stdout().handle) and !noColor();
@@ -309,6 +311,29 @@ pub const Writer = struct {
         const s = std.fmt.bufPrint(&buf, fmt, a) catch return error.Overflow;
         try self.ew(s);
         try self.ew("\n");
+    }
+
+    pub fn fail(self: *Writer, msg: []const u8) !void {
+        self.setExitMessage(msg);
+        try self.err(msg);
+    }
+
+    pub fn failFmt(self: *Writer, comptime fmt: []const u8, a: anytype) !void {
+        var buf: [1024]u8 = undefined;
+        const s = std.fmt.bufPrint(&buf, fmt, a) catch return error.Overflow;
+        self.setExitMessage(s);
+        try self.err(s);
+    }
+
+    pub fn setExitMessage(self: *Writer, msg: []const u8) void {
+        const n = @min(msg.len, self.exit_msg.len);
+        @memcpy(self.exit_msg[0..n], msg[0..n]);
+        self.exit_len = n;
+    }
+
+    pub fn exitMessage(self: *const Writer) ?[]const u8 {
+        if (self.exit_len == 0) return null;
+        return self.exit_msg[0..self.exit_len];
     }
 
     pub fn success(self: *Writer, msg: []const u8) !void {

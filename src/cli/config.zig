@@ -67,7 +67,9 @@ pub const Config = struct {
 pub const ConfigError = error{
     MissingKey,
     MissingAddress,
-} || signer_mod.Signer.FromHexError;
+    InvalidLength,
+    InvalidCharacter,
+};
 
 pub fn load(allocator: std.mem.Allocator, flags: args_mod.GlobalFlags) Config {
     var config = Config{ .allocator = allocator };

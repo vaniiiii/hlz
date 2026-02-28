@@ -23,7 +23,7 @@ pub const ClientError = error{
     ApiError,
     BufferOverflow,
     InvalidResponse,
-} || std.http.Client.RequestError || std.http.Client.Request.ReadError || std.mem.Allocator.Error || signing.SignError;
+} || std.http.Client.RequestError || std.http.Client.Connection.ReadError || std.mem.Allocator.Error || signing.SignError;
 
 /// HTTP client for the Hyperliquid API.
 pub const Client = struct {
