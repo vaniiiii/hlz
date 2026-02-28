@@ -9,7 +9,7 @@ const Hash = signer.Hash;
 
 
 /// Compute keccak256 at comptime.
-fn comptimeKeccak256(data: []const u8) Hash {
+fn keccak256(data: []const u8) Hash {
     @setEvalBranchQuota(100_000);
     var hash: Hash = undefined;
     Keccak256.hash(data, &hash, .{});
@@ -38,7 +38,7 @@ fn hashString(s: []const u8) Hash {
 // Pre-computed at comptime from the Rust SDK domain definitions.
 
 const EIP712_DOMAIN_TYPE = "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)";
-const EIP712_DOMAIN_TYPEHASH = comptimeKeccak256(EIP712_DOMAIN_TYPE);
+const EIP712_DOMAIN_TYPEHASH = keccak256(EIP712_DOMAIN_TYPE);
 
 /// EIP-712 domain parameters.
 pub const Domain = struct {
@@ -91,14 +91,9 @@ pub const TESTNET_DOMAIN = Domain{
 };
 
 // Pre-computed domain separators
-pub const CORE_DOMAIN_SEPARATOR = comptimeDomainSeparator(CORE_DOMAIN);
-pub const MAINNET_DOMAIN_SEPARATOR = comptimeDomainSeparator(MAINNET_DOMAIN);
-pub const TESTNET_DOMAIN_SEPARATOR = comptimeDomainSeparator(TESTNET_DOMAIN);
-
-fn comptimeDomainSeparator(domain: Domain) Hash {
-    @setEvalBranchQuota(100_000);
-    return domainSeparator(domain);
-}
+pub const CORE_DOMAIN_SEPARATOR = blk: { @setEvalBranchQuota(100_000); break :blk domainSeparator(CORE_DOMAIN); };
+pub const MAINNET_DOMAIN_SEPARATOR = blk: { @setEvalBranchQuota(100_000); break :blk domainSeparator(MAINNET_DOMAIN); };
+pub const TESTNET_DOMAIN_SEPARATOR = blk: { @setEvalBranchQuota(100_000); break :blk domainSeparator(TESTNET_DOMAIN); };
 
 // Hyperliquid wraps types with "HyperliquidTransaction:" prefix for typed data path.
 
@@ -106,31 +101,31 @@ const HL_PREFIX = "HyperliquidTransaction:";
 
 // Agent (used in RMP signing path — no prefix)
 pub const AGENT_TYPE = "Agent(string source,bytes32 connectionId)";
-pub const AGENT_TYPEHASH = comptimeKeccak256(AGENT_TYPE);
+pub const AGENT_TYPEHASH = keccak256(AGENT_TYPE);
 
 // UsdSend
 pub const USD_SEND_TYPE = HL_PREFIX ++ "UsdSend(string hyperliquidChain,string destination,string amount,uint64 time)";
-pub const USD_SEND_TYPEHASH = comptimeKeccak256(USD_SEND_TYPE);
+pub const USD_SEND_TYPEHASH = keccak256(USD_SEND_TYPE);
 
 // SpotSend
 pub const SPOT_SEND_TYPE = HL_PREFIX ++ "SpotSend(string hyperliquidChain,string destination,string token,string amount,uint64 time)";
-pub const SPOT_SEND_TYPEHASH = comptimeKeccak256(SPOT_SEND_TYPE);
+pub const SPOT_SEND_TYPEHASH = keccak256(SPOT_SEND_TYPE);
 
 // SendAsset
 pub const SEND_ASSET_TYPE = HL_PREFIX ++ "SendAsset(string hyperliquidChain,string destination,string sourceDex,string destinationDex,string token,string amount,string fromSubAccount,uint64 nonce)";
-pub const SEND_ASSET_TYPEHASH = comptimeKeccak256(SEND_ASSET_TYPE);
+pub const SEND_ASSET_TYPEHASH = keccak256(SEND_ASSET_TYPE);
 
 // ApproveAgent
 pub const APPROVE_AGENT_TYPE = HL_PREFIX ++ "ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)";
-pub const APPROVE_AGENT_TYPEHASH = comptimeKeccak256(APPROVE_AGENT_TYPE);
+pub const APPROVE_AGENT_TYPEHASH = keccak256(APPROVE_AGENT_TYPE);
 
 // ConvertToMultiSigUser
 pub const CONVERT_MULTISIG_TYPE = HL_PREFIX ++ "ConvertToMultiSigUser(string hyperliquidChain,string signers,uint64 nonce)";
-pub const CONVERT_MULTISIG_TYPEHASH = comptimeKeccak256(CONVERT_MULTISIG_TYPE);
+pub const CONVERT_MULTISIG_TYPEHASH = keccak256(CONVERT_MULTISIG_TYPE);
 
 // SendMultiSig
 pub const SEND_MULTISIG_TYPE = HL_PREFIX ++ "SendMultiSig(string hyperliquidChain,bytes32 multiSigActionHash,uint64 nonce)";
-pub const SEND_MULTISIG_TYPEHASH = comptimeKeccak256(SEND_MULTISIG_TYPE);
+pub const SEND_MULTISIG_TYPEHASH = keccak256(SEND_MULTISIG_TYPE);
 
 
 /// Hash the Agent struct (RMP signing path).
