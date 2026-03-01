@@ -69,6 +69,12 @@ pub const Signer = struct {
 
     /// Create a signer from a 32-byte private key.
     pub fn init(private_key: Hash) std.crypto.errors.IdentityElementError!Signer {
+        // Reject non-canonical private keys (>= curve order or zero).
+        // Secp256k1.mul silently reduces mod n, which would create a signer
+        // whose stored private_key bytes differ from the effective scalar,
+        // causing sign() to fail with NonCanonical.
+        _ = Secp256k1.scalar.Scalar.fromBytes(private_key, .big) catch
+            return error.IdentityElement;
         const public_scalar = try Secp256k1.mul(Secp256k1.basePoint, private_key, .big);
         const public_key = public_scalar.toCompressedSec1();
 
