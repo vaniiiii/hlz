@@ -178,6 +178,43 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
 
+    // Crypto verification tests
+    const libsecp_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ecdsa_libsecp256k1.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "hlz", .module = hlz },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(libsecp_tests).step);
+
+    const glv_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/glv_invariants.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "hlz", .module = hlz },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(glv_tests).step);
+
+    const fuzz_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ecdsa_fuzz.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "hlz", .module = hlz },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
+
     // ── Benchmarks ───────────────────────────────────────────────────
     const bench_step = b.step("bench", "Run benchmarks");
     const bench = b.addExecutable(.{
