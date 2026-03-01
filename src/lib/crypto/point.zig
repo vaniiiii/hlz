@@ -1,6 +1,10 @@
 //! secp256k1 point operations using 5×52-bit field arithmetic.
+//!
 //! Homogeneous projective coordinates: (X, Y, Z) represents affine (X/Z, Y/Z).
-//! Formulas from https://eprint.iacr.org/2015/1060.pdf (Algorithms 7, 8, 9).
+//! Used by endo.zig when `-Dfast-crypto=true`.
+//!
+//! Formulas from Renes, Costello, Batina. "Complete addition formulas for prime
+//! order elliptic curves" (https://eprint.iacr.org/2015/1060.pdf), Algorithms 7, 8, 9.
 
 const std = @import("std");
 const Fe = @import("field.zig").Fe;

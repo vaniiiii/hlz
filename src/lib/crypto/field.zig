@@ -2,7 +2,12 @@
 //!
 //! Field elements mod p = 2^256 - 2^32 - 977. Five 64-bit limbs, each holding
 //! at most 52 significant bits (last limb: 48 bits), with headroom for lazy carries.
-//! Based on libsecp256k1 and RustCrypto/k256.
+//!
+//! This is the same representation used by libsecp256k1 (C) and RustCrypto/k256 (Rust).
+//! The 52-bit limbs leave 12 bits of headroom per limb, allowing multiple additions
+//! before a carry pass is needed. Used by endo.zig when `-Dfast-crypto=true`.
+//!
+//! Reference: libsecp256k1 src/field_5x52_impl.h
 
 const std = @import("std");
 const mem = std.mem;

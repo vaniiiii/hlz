@@ -10,6 +10,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // ── Build options ──────────────────────────────────────────────────
+    // Crypto backend selection:
+    // - Default (false): stdlib secp256k1 — constant-time, safe for servers
+    // - Opt-in (true):   custom GLV with precomputed tables — ~3.4x faster signing,
+    //                     safe for CLIs/local tools, not audited for server use
+    const fast_crypto = b.option(bool, "fast-crypto", "Use custom GLV endomorphism for ~3.4x faster signing (not audited for server use)") orelse false;
+
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "use_stdlib_crypto", !fast_crypto);
+
     // ── Core library module (lib/ + sdk/) ────────────────────────────
     const hlz = b.addModule("hlz", .{
         .root_source_file = b.path("src/root.zig"),
@@ -17,6 +27,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "websocket", .module = websocket_dep.module("websocket") },
+            .{ .name = "build_options", .module = build_options.createModule() },
         },
     });
 
@@ -178,7 +189,27 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(integration_tests).step);
 
-    // Crypto verification tests
+    const wycheproof_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ecdsa_wycheproof.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(wycheproof_tests).step);
+
+    const differential_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/ecdsa_differential.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "hlz", .module = hlz },
+            },
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(differential_tests).step);
+
     const libsecp_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/ecdsa_libsecp256k1.zig"),

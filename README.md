@@ -277,7 +277,7 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 | HTTP endpoints | 30 (18 info + 12 exchange) |
 | WS subscriptions | 13 types |
 | Response types | 62 |
-| Unit tests | 108 |
+| Unit tests | 161 |
 | E2E tests | 17 |
 
 ---
@@ -288,7 +288,8 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 zig build                              # Debug
 zig build -Doptimize=ReleaseSmall      # Small binary (636KB)
 zig build -Doptimize=ReleaseFast       # Fast binary
-zig build test                         # Unit tests
+zig build -Dfast-crypto=true           # Custom GLV (~3.4x faster signing)
+zig build test                         # Unit tests (161)
 zig build bench                        # Signing benchmarks
 zig build e2e                          # Live API tests
 ```

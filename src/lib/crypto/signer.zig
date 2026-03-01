@@ -1,13 +1,19 @@
 //! secp256k1 ECDSA signer for Ethereum-compatible signatures.
 //! Forked from zabi (MIT, github.com/Raiden1411/zabi). Zero allocations.
+//!
+//! By default uses stdlib secp256k1 (constant-time, safe for all use cases).
+//! Build with `-Dfast-crypto=true` for custom GLV endomorphism with precomputed
+//! tables (~3.4x faster signing). The fast path is intended for CLIs and local
+//! tools — it has not been audited for constant-time guarantees under LLVM.
 
 const std = @import("std");
+const build_options = @import("build_options");
 
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
 const Keccak256 = std.crypto.hash.sha3.Keccak256;
 const Secp256k1 = std.crypto.ecc.Secp256k1;
-const endo = @import("endo.zig");
-const Point = @import("point.zig").Point;
+const use_stdlib_crypto = build_options.use_stdlib_crypto;
+const endo = if (!use_stdlib_crypto) @import("endo.zig") else struct {};
 
 /// A 32-byte hash (keccak256 output, private key, etc.)
 pub const Hash = [32]u8;
@@ -120,16 +126,24 @@ pub const Signer = struct {
         const k_bytes = self.generateNonce(hash);
         const k = try Secp256k1.scalar.Scalar.fromBytes(k_bytes, .big);
 
-        // R = k * G (5×52 field + GLV endomorphism)
-        const p = try endo.mulBasePointGLV(k.toBytes(.big), .big);
-        const p_affine = p.toAffine();
-        const xs = p_affine.x.toBytes(); // already big-endian
+        // R = k * G
+        const y_is_odd: bool, const xs: [32]u8 = if (use_stdlib_crypto) blk: {
+            // stdlib path: standard scalar multiplication (no precomputed tables)
+            const p = try Secp256k1.basePoint.mul(k.toBytes(.big), .big);
+            const aff = p.affineCoordinates();
+            break :blk .{ aff.y.isOdd(), aff.x.toBytes(.big) };
+        } else blk: {
+            // custom path: 5×52-bit field + GLV endomorphism + precomputed tables (~5x faster)
+            const p = try endo.mulBasePointGLV(k.toBytes(.big), .big);
+            const aff = p.toAffine();
+            break :blk .{ aff.y.isOdd(), aff.x.toBytes() };
+        };
         const r = reduceToScalar(Secp256k1.Fe.encoded_length, xs);
 
         if (r.isZero()) return error.IdentityElement;
 
         // y parity
-        var y_int: u1 = @truncate(if (p_affine.y.isOdd()) @as(u8, 1) else @as(u8, 0));
+        var y_int: u1 = @intFromBool(y_is_odd);
 
         // S = k^-1 * (z + r * privkey)
         const k_inv = k.invert();
@@ -342,4 +356,30 @@ test "keccak256: known vector" {
     try std.testing.expectEqual(@as(u8, 0xd2), empty_hash[1]);
     try std.testing.expectEqual(@as(u8, 0x46), empty_hash[2]);
     try std.testing.expectEqual(@as(u8, 0x70), empty_hash[31]);
+}
+
+test "signer: signatures are low-S" {
+    const s = try Signer.fromHex("e908f86dbb4d55ac876378565aafeabc187f6690f046459397b17d9b9a19688e");
+    const half_n = Secp256k1.scalar.field_order / 2;
+
+    for (0..64) |i| {
+        var msg: [32]u8 = undefined;
+        @memset(&msg, @intCast(i));
+        const sig = try s.sign(msg);
+        try std.testing.expect(sig.s <= half_n);
+    }
+}
+
+test "signer: recover rejects non-canonical r/s" {
+    const s = try Signer.fromHex("e908f86dbb4d55ac876378565aafeabc187f6690f046459397b17d9b9a19688e");
+    const msg = keccak256("non-canonical checks");
+    const sig = try s.sign(msg);
+
+    var bad_r = sig;
+    bad_r.r = Secp256k1.scalar.field_order;
+    try std.testing.expectError(error.NonCanonical, Signer.recoverAddress(bad_r, msg));
+
+    var bad_s = sig;
+    bad_s.s = Secp256k1.scalar.field_order;
+    try std.testing.expectError(error.NonCanonical, Signer.recoverAddress(bad_s, msg));
 }

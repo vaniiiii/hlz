@@ -1,6 +1,51 @@
 //! GLV endomorphism-accelerated base point multiplication for secp256k1.
-//! Splits scalar k into two ~128-bit halves via k = k1 + k2·λ (mod n),
-//! then computes k·G = k1·G + k2·φ(G) with 4-bit windowed double-base mul.
+//!
+//! Opt-in via `-Dfast-crypto=true`. ~3.4x faster than stdlib's `mul()` for signing.
+//! Not audited for constant-time guarantees — see below.
+//!
+//! ## How it works
+//!
+//! secp256k1 has an efficiently computable endomorphism ψ(x,y) = (β·x, y) where
+//! β³ ≡ 1 (mod p). The corresponding scalar λ satisfies ψ(P) = λ·P and λ³ ≡ 1 (mod n).
+//!
+//! To compute k·G, we decompose k = k₁ + k₂·λ (mod n) via the Babai rounding algorithm
+//! (stdlib's `Endormorphism.splitScalar`), giving |k₁|, |k₂| < √n (~128 bits each).
+//! Then k·G = k₁·G + k₂·ψ(G), a double-base scalar multiplication over half-width scalars.
+//!
+//! ## Why it's faster
+//!
+//! Two techniques stack:
+//!
+//! 1. **GLV decomposition**: Two 128-bit scalar muls instead of one 256-bit mul.
+//!    Half the doublings (32 instead of 64 in the main loop).
+//!
+//! 2. **Precomputed affine tables**: 16-entry tables for both G and ψ(G), computed at
+//!    comptime. Each loop iteration does two table lookups + two mixed additions instead
+//!    of double-and-add. The 5×52-bit field representation (matching libsecp256k1/k256)
+//!    makes these additions cheaper than stdlib's 4×64 Montgomery form.
+//!
+//! ## Constant-time design
+//!
+//! The implementation attempts constant-time behavior throughout:
+//! - `affineSelect`: scans all 16 table entries with `cMov` (no branch on index)
+//! - `cmovBytes`: branchless byte masking for sign flips
+//! - Fixed 32-iteration loop (bits 124→0 in steps of 4), no early exit
+//! - `splitScalar`: wide multiplies + field arithmetic, no data-dependent branches
+//!
+//! **Caveat**: This has not been verified with Valgrind/ctgrind. LLVM may transform
+//! constant-time source patterns into branching code. The stdlib intentionally keeps
+//! GLV off the secret-key `mul()` path for this reason. Use `-Dfast-crypto=true` for
+//! local tools; for servers signing on behalf of users, prefer the stdlib default.
+//!
+//! ## References
+//!
+//! - Gallant, Lambert, Vanstone. "Faster Point Multiplication on Elliptic Curves with
+//!   Efficient Endomorphisms" (CRYPTO 2001). The original GLV paper.
+//! - libsecp256k1: Bitcoin Core's C implementation, which uses the same GLV + precomputed
+//!   tables approach with formal proofs for the scalar decomposition bounds.
+//! - RustCrypto/k256: Rust implementation using identical 5×52-bit field representation.
+//! - https://eprint.iacr.org/2015/1060.pdf: Point addition formulas used in point.zig.
+//! - Zig stdlib `Secp256k1.Endormorphism.splitScalar`: Babai rounding decomposition.
 
 const std = @import("std");
 const mem = std.mem;
@@ -56,7 +101,8 @@ const lambda_g_pc = blk: {
     break :blk precomputeAffine16(lambda_g);
 };
 
-/// Constant-time base point multiplication using GLV endomorphism + 5×52 field.
+/// Base point multiplication using GLV endomorphism + 5×52 field.
+/// Designed for constant-time behavior but not verified with ctgrind — see module docs.
 pub fn mulBasePointGLV(s_: [32]u8, endian: std.builtin.Endian) IdentityElementError!Point {
     const s = if (endian == .little) s_ else StdSecp.Fe.orderSwap(s_);
     const zero_bytes = comptime scalar.Scalar.zero.toBytes(.little);

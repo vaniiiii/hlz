@@ -4,15 +4,42 @@ title: Benchmarks
 
 # Benchmarks
 
-Measured on Apple M4, median of 1000 iterations. Take these with a grain of salt — different machines, different compilers, different results.
+Measured on Apple M4, median of 10,000 iterations (100,000 for sub-µs ops). Take these with a grain of salt — different machines, different compilers, different results.
 
 ## Signing
 
-| Operation | Time |
-|-----------|------|
-| Sign order | ~34.5 µs |
-| Sign cancel | ~34.1 µs |
-| EIP-712 struct hash | ~250 ns |
+hlz uses Zig's stdlib secp256k1 by default. An optional custom GLV endomorphism path (`-Dfast-crypto=true`) with precomputed tables gives ~3.4x faster signing — see [Crypto Backends](#crypto-backends).
+
+| Operation | stdlib (default) | `-Dfast-crypto` | Rust SDK (alloy) |
+|-----------|-----------------|-----------------|------------------|
+| Sign order | ~112 µs | ~34.6 µs | ~34.0 µs |
+| Sign cancel | ~112 µs | ~34.1 µs | ~34.3 µs |
+| Sign USD send | ~116 µs | ~34.4 µs | ~37.8 µs |
+| EIP-712 struct hash | ~291 ns | ~291 ns | ~1.2 µs |
+| keccak256 (32B) | ~125 ns | ~125 ns | ~125 ns |
+| msgpack encode | ~333 ns | ~333 ns | ~250 ns |
+
+Rust SDK column measured with [hypersdk](https://github.com/infinitefield/hypersdk) v0.2.5, `--release` profile, same machine and inputs.
+
+## Crypto Backends
+
+The signing hot path is dominated by a single scalar multiplication `k·G` (computing the ECDSA nonce point). hlz offers two backends:
+
+**stdlib (default)** — Uses `std.crypto.ecc.Secp256k1.basePoint.mul()`. Constant-time, audited as part of Zig's standard library. Safe for all use cases including servers signing on behalf of users.
+
+**Custom GLV** (`-Dfast-crypto=true`) — Uses GLV endomorphism with precomputed affine tables and 5×52-bit field arithmetic (same representation as libsecp256k1 and RustCrypto/k256). ~3.4x faster because it halves the number of point doublings and avoids recomputing known multiples of the generator.
+
+The custom path is designed for constant-time behavior (branchless table lookups via `cMov`, fixed iteration count, mask-based sign flips), but has **not been verified with Valgrind/ctgrind**. For local CLI tools this is fine. For servers exposed to timing attacks, use the stdlib default.
+
+```bash
+# Default: stdlib secp256k1 (safe for all use cases)
+zig build -Doptimize=ReleaseSmall
+
+# Opt-in: custom GLV (~3.4x faster signing)
+zig build -Doptimize=ReleaseSmall -Dfast-crypto=true
+```
+
+Both produce identical signatures — the switch only affects which algorithm computes the nonce point.
 
 ## Binary Size
 
@@ -31,5 +58,6 @@ Clean build takes ~3 seconds on Apple M4. Zig's compilation model helps here.
 ```bash
 git clone https://github.com/vaniiiii/hlz
 cd hlz
-zig build bench
+zig build bench                        # stdlib (default)
+zig build bench -Dfast-crypto=true     # custom GLV
 ```

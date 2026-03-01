@@ -16,7 +16,8 @@ Zig SDK, CLI, and trading terminal for Hyperliquid.
 ```bash
 zig build                              # Debug build → zig-out/bin/hl
 zig build -Doptimize=ReleaseSmall      # Production (827KB)
-zig build test                         # Unit tests (108)
+zig build -Dfast-crypto=true           # Custom GLV (~3.4x faster signing, not audited for servers)
+zig build test                         # Unit tests (161)
 zig build bench                        # Signing benchmarks
 zig build e2e                          # Live API tests (needs network + HL_KEY)
 ```
@@ -102,7 +103,10 @@ REST thread (500ms loop) — user positions, orders, fills
 | `src/cli/args.zig` | Argument parser (38 commands) |
 | `src/terminal/trade.zig` | Trading TUI |
 | `src/tui/Buffer.zig` | Double-buffered cell grid |
-| `src/lib/crypto/signer.zig` | secp256k1 ECDSA |
+| `src/lib/crypto/signer.zig` | secp256k1 ECDSA (stdlib default, custom GLV opt-in) |
+| `src/lib/crypto/endo.zig` | GLV endomorphism (opt-in via `-Dfast-crypto`) |
+| `src/lib/crypto/field.zig` | 5×52-bit field arithmetic for custom path |
+| `src/lib/crypto/point.zig` | Projective point ops for custom path |
 
 ## Testing
 

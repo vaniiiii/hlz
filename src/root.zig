@@ -1,5 +1,8 @@
 //! HyperZig — High-performance Zig SDK for Hyperliquid.
 
+/// Build-time configuration (e.g. crypto backend selection).
+pub const build_options = @import("build_options");
+
 // ── lib/ — core primitives ───────────────────────────────────────
 pub const encoding = struct {
     pub const msgpack = @import("lib/encoding/msgpack.zig");
