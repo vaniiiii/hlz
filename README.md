@@ -11,9 +11,16 @@
 </p>
 
 <p align="center">
-  <img src="terminal.gif" alt="hlz trading terminal" width="720" />
+  <img src="https://img.shields.io/badge/version-v0.4.8-blue" alt="version" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="license" />
+  <img src="https://img.shields.io/badge/status-early_beta-orange" alt="status" />
+  <img src="https://img.shields.io/badge/platform-macOS_|_Linux-blue" alt="platform" />
+  <img src="https://img.shields.io/badge/zig-0.15.2-F7A41D?logo=zig&logoColor=white" alt="zig" />
 </p>
 
+<p align="center">
+  <img src="terminal.gif" alt="hlz trading terminal" width="720" />
+</p>
 
 <p align="center">
   <a href="#install">Install</a> ·
