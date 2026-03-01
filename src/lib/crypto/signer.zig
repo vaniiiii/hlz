@@ -188,10 +188,28 @@ pub const Signer = struct {
     }
 
     /// RFC 6979 deterministic nonce generation.
+    /// Applies bits2octets to the message hash per RFC 6979 §3.2 step d.
     fn generateNonce(self: Signer, message_hash: Hash) [32]u8 {
         var v: [33]u8 = undefined;
         var k: [32]u8 = undefined;
         var buffer: [97]u8 = undefined;
+
+        // bits2octets(h1): reduce message hash mod q (RFC 6979 §2.3.4)
+        // For secp256k1 (qlen=256, hlen=256): if h1 >= q, subtract q.
+        // Branch-free: compute both, select with constant-time compare.
+        const h_int = std.mem.readInt(u256, &message_hash, .big);
+        var reduced: Hash = undefined;
+        std.mem.writeInt(u256, &reduced, h_int -% Secp256k1.scalar.field_order, .big);
+        var field_order_be: [32]u8 = undefined;
+        std.mem.writeInt(u256, &field_order_be, Secp256k1.scalar.field_order, .big);
+        const needs_reduce = @intFromBool(
+            std.crypto.timing_safe.compare(u8, &message_hash, &field_order_be, .big) != .lt,
+        );
+        var msg_reduced: Hash = undefined;
+        for (&msg_reduced, message_hash, reduced) |*out, orig, red| {
+            const mask: u8 = @as(u8, 0) -% @as(u8, @intCast(needs_reduce));
+            out.* = (orig & ~mask) | (red & mask);
+        }
 
         @memset(v[0..32], 0x01);
         v[32] = 0x00;
@@ -201,7 +219,7 @@ pub const Signer = struct {
         @memcpy(buffer[0..32], v[0..32]);
         buffer[32] = 0x00;
         @memcpy(buffer[33..65], &self.private_key);
-        @memcpy(buffer[65..97], &message_hash);
+        @memcpy(buffer[65..97], &msg_reduced);
         HmacSha256.create(&k, &buffer, &k);
 
         // Step e
@@ -211,7 +229,7 @@ pub const Signer = struct {
         @memcpy(buffer[0..32], v[0..32]);
         buffer[32] = 0x01;
         @memcpy(buffer[33..65], &self.private_key);
-        @memcpy(buffer[65..97], &message_hash);
+        @memcpy(buffer[65..97], &msg_reduced);
         HmacSha256.create(&k, &buffer, &k);
 
         // Step g
