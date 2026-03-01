@@ -8,7 +8,7 @@
 Zig SDK, CLI, and trading terminal for Hyperliquid.
 
 - **Language**: Zig 0.15.2
-- **Binaries**: `hlz` (827KB CLI), `hlz-terminal` (768KB terminal)
+- **Binaries**: `hlz` (827KB CLI), `hlz-terminal` (971KB terminal)
 - **API**: Hyperliquid L1 — https://api.hyperliquid.xyz
 
 ## Build & Run

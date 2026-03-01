@@ -30,8 +30,8 @@ A Zig implementation of the Hyperliquid SDK with a CLI and trading terminal. Two
 
 | Binary | Size | What it does |
 |--------|------|-------------|
-| `hlz` | 636 KB | 38-command CLI — market data, trading, transfers, streaming |
-| `hlz-terminal` | 768 KB | Trading terminal — candlestick chart, order book, trade tape |
+| `hlz` | 827 KB | 38-command CLI — market data, trading, transfers, streaming |
+| `hlz-terminal` | 971 KB | Trading terminal — candlestick chart, order book, trade tape |
 
 Both are static binaries. Pipe-aware — tables on TTY, JSON when piped.
 
@@ -269,10 +269,9 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 
 | | |
 |---|---|
-| `hlz` binary | 636 KB |
-| `hlz-terminal` binary | 768 KB |
-| SDK (no HTTP/TLS) | 116 KB |
-| Source | ~15,000 lines |
+| `hlz` binary | 827 KB |
+| `hlz-terminal` binary | 971 KB |
+| Source | ~16,000 lines |
 | Commands | 38 |
 | HTTP endpoints | 30 (18 info + 12 exchange) |
 | WS subscriptions | 13 types |
@@ -286,7 +285,7 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 
 ```bash
 zig build                              # Debug
-zig build -Doptimize=ReleaseSmall      # Small binary (636KB)
+zig build -Doptimize=ReleaseSmall      # Small binary (827KB)
 zig build -Doptimize=ReleaseFast       # Fast binary
 zig build -Dfast-crypto=true           # Custom GLV (~3.4x faster signing)
 zig build test                         # Unit tests (161)
