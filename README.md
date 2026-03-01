@@ -298,7 +298,7 @@ zig build e2e                          # Live API tests
 
 ## Credits
 
-Inspired by [hypersdk](https://github.com/infinitefield/hypersdk) (Rust SDK), [hyperliquid-cli](https://github.com/chrisling-dev/hyperliquid-cli) (TypeScript CLI), and [zabi](https://github.com/Raiden1411/zabi) (Zig Ethereum tooling).
+Inspired by [hypersdk](https://github.com/infinitefield/hypersdk) & [hypecli](https://github.com/infinitefield/hypersdk/tree/main/hypecli) (Rust SDK & CLI), [hyperliquid-cli](https://github.com/chrisling-dev/hyperliquid-cli) (TypeScript CLI), and [zabi](https://github.com/Raiden1411/zabi) (Zig Ethereum tooling).
 
 <p align="center">
   <a href="https://ziglang.org"><img src="docs/public/zig-mark.svg" alt="Zig" height="28" /></a>
