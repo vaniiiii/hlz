@@ -8,6 +8,7 @@ const resp_types = @import("response.zig");
 const signer_mod = @import("../lib/crypto/signer.zig");
 const eip712 = @import("../lib/crypto/eip712.zig");
 const Decimal = @import("../lib/math/decimal.zig").Decimal;
+const msgpack = @import("../lib/encoding/msgpack.zig");
 
 const Signer = signer_mod.Signer;
 const Address = signer_mod.Address;
@@ -195,7 +196,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signOrder(s, batch, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchange("order", batch, sig, nonce, vault_address, expires_after);
+        return self.sendExchange(batch, sig, nonce, vault_address, expires_after);
     }
 
     /// Cancel a batch of orders.
@@ -208,7 +209,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signCancel(s, batch, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchange("cancel", batch, sig, nonce, vault_address, expires_after);
+        return self.sendExchange(batch, sig, nonce, vault_address, expires_after);
     }
 
     /// Cancel a batch of orders by cloid.
@@ -221,7 +222,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signCancelByCloid(s, batch, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, batch, .cancelByCloid);
+        return self.sendExchangeRawFull(sig, nonce, batch, .cancelByCloid, vault_address, expires_after);
     }
 
     /// Modify a batch of orders.
@@ -234,7 +235,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signModify(s, batch, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, batch, .batchModify);
+        return self.sendExchangeRawFull(sig, nonce, batch, .batchModify, vault_address, expires_after);
     }
 
     /// Schedule cancellation of all orders.
@@ -247,7 +248,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signScheduleCancel(s, sc, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, sc, .scheduleCancel);
+        return self.sendExchangeRawFull(sig, nonce, sc, .scheduleCancel, vault_address, expires_after);
     }
 
     /// Update isolated margin.
@@ -260,7 +261,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signUpdateIsolatedMargin(s, uim, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, uim, .updateIsolatedMargin);
+        return self.sendExchangeRawFull(sig, nonce, uim, .updateIsolatedMargin, vault_address, expires_after);
     }
 
     /// Update leverage for an asset.
@@ -273,7 +274,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signUpdateLeverage(s, ul, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, ul, .updateLeverage);
+        return self.sendExchangeRawFull(sig, nonce, ul, .updateLeverage, vault_address, expires_after);
     }
 
     /// Set referrer code.
@@ -286,7 +287,7 @@ pub const Client = struct {
         expires_after: ?u64,
     ) !ExchangeResult {
         const sig = try signing.signSetReferrer(s, sr, nonce, self.chain, vault_address, expires_after);
-        return self.sendExchangeRaw(sig, nonce, sr, .setReferrer);
+        return self.sendExchangeRawFull(sig, nonce, sr, .setReferrer, vault_address, expires_after);
     }
 
     /// Toggle big blocks.
@@ -300,14 +301,18 @@ pub const Client = struct {
     ) !ExchangeResult {
         const sig = try signing.signEvmUserModify(s, using_big_blocks, nonce, self.chain, vault_address, expires_after);
         var body_buf: [512]u8 = undefined;
-        const body = std.fmt.bufPrint(&body_buf,
-            \\{{"action":{{"type":"evmUserModify","usingBigBlocks":{s}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-        , .{
+        var fbs = std.io.fixedBufferStream(&body_buf);
+        const w = fbs.writer();
+        const sig_json = sigJsonStr(sig);
+        try std.fmt.format(w, "{{\"action\":{{\"type\":\"evmUserModify\",\"usingBigBlocks\":{s}}},\"nonce\":{d},\"signature\":{s}", .{
             if (using_big_blocks) "true" else "false",
             nonce,
-            sigJsonSlice(&sigJsonStr(sig)),
-        }) catch return error.BufferOverflow;
-        return self.exchangeRequestDyn(body);
+            sigJsonSlice(&sig_json),
+        });
+        try writeOptionalAddress(w, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(w, ",\"expiresAfter\":", expires_after);
+        try w.writeAll("}");
+        return self.exchangeRequestDyn(fbs.getWritten());
     }
 
     /// Invalidate a nonce (noop).
@@ -320,25 +325,27 @@ pub const Client = struct {
     ) !ExchangeResult {
         const sig = try signing.signNoop(s, nonce, self.chain, vault_address, expires_after);
         var body_buf: [512]u8 = undefined;
-        const body = std.fmt.bufPrint(&body_buf,
-            \\{{"action":{{"type":"noop"}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-        , .{
-            nonce,
-            sigJsonSlice(&sigJsonStr(sig)),
-        }) catch return error.BufferOverflow;
-        return self.exchangeRequestDyn(body);
+        var fbs = std.io.fixedBufferStream(&body_buf);
+        const w = fbs.writer();
+        const sig_json = sigJsonStr(sig);
+        try std.fmt.format(w, "{{\"action\":{{\"type\":\"noop\"}},\"nonce\":{d},\"signature\":{s}", .{ nonce, sigJsonSlice(&sig_json) });
+        try writeOptionalAddress(w, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(w, ",\"expiresAfter\":", expires_after);
+        try w.writeAll("}");
+        return self.exchangeRequestDyn(fbs.getWritten());
     }
 
     /// Send USDC to another address.
     pub fn sendUsdc(
         self: *Client,
         s: Signer,
-        destination: []const u8,
+        destination: Address,
         amount: []const u8,
         time: u64,
     ) !ExchangeResult {
         const sig = try eip712.signUsdSend(s, self.chain.isMainnet(), destination, amount, time);
         const chain_str = self.chain.name();
+        const dest_hex = addressToHex(destination);
 
         var body_buf: [1024]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
@@ -346,7 +353,7 @@ pub const Client = struct {
         , .{
             self.chain.sigChainId(),
             chain_str,
-            destination,
+            &dest_hex,
             amount,
             time,
             time,
@@ -360,7 +367,7 @@ pub const Client = struct {
     pub fn spotSend(
         self: *Client,
         s: Signer,
-        destination: []const u8,
+        destination: Address,
         token: []const u8,
         amount: []const u8,
         time: u64,
@@ -368,11 +375,12 @@ pub const Client = struct {
         const sig = try signing.signSpotSend(s, self.chain, destination, token, amount, time);
         const chain_str = self.chain.name();
         const sig_chain_id = self.chain.sigChainId();
+        const dest_hex = addressToHex(destination);
 
         var body_buf: [1024]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
             \\{{"action":{{"type":"spotSend","signatureChainId":"{s}","hyperliquidChain":"{s}","destination":"{s}","token":"{s}","amount":"{s}","time":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-        , .{ sig_chain_id, chain_str, destination, token, amount, time, time, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        , .{ sig_chain_id, chain_str, &dest_hex, token, amount, time, time, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
         return self.exchangeRequestDyn(body);
     }
 
@@ -380,7 +388,7 @@ pub const Client = struct {
     pub fn sendAsset(
         self: *Client,
         s: Signer,
-        destination: []const u8,
+        destination: Address,
         source_dex: []const u8,
         destination_dex: []const u8,
         token: []const u8,
@@ -391,11 +399,12 @@ pub const Client = struct {
         const sig = try signing.signSendAsset(s, self.chain, destination, source_dex, destination_dex, token, amount, from_sub_account, nonce);
         const chain_str = self.chain.name();
         const sig_chain_id = self.chain.sigChainId();
+        const dest_hex = addressToHex(destination);
 
         var body_buf: [2048]u8 = undefined;
         const body = std.fmt.bufPrint(&body_buf,
             \\{{"action":{{"type":"sendAsset","signatureChainId":"{s}","hyperliquidChain":"{s}","destination":"{s}","sourceDex":"{s}","destinationDex":"{s}","token":"{s}","amount":"{s}","fromSubAccount":"{s}","nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-        , .{ sig_chain_id, chain_str, destination, source_dex, destination_dex, token, amount, from_sub_account, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        , .{ sig_chain_id, chain_str, &dest_hex, source_dex, destination_dex, token, amount, from_sub_account, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
         return self.exchangeRequestDyn(body);
     }
 
@@ -403,7 +412,7 @@ pub const Client = struct {
     pub fn approveAgent(
         self: *Client,
         s: Signer,
-        agent_address: []const u8,
+        agent_address: Address,
         agent_name: ?[]const u8,
         nonce: u64,
     ) !ExchangeResult {
@@ -411,16 +420,17 @@ pub const Client = struct {
         const sig = try signing.signApproveAgent(s, self.chain, agent_address, name, nonce);
         const chain_str = self.chain.name();
         const sig_chain_id = self.chain.sigChainId();
+        const addr_hex = addressToHex(agent_address);
 
         var body_buf: [1024]u8 = undefined;
         const body = if (agent_name != null)
             std.fmt.bufPrint(&body_buf,
                 \\{{"action":{{"type":"approveAgent","signatureChainId":"{s}","hyperliquidChain":"{s}","agentAddress":"{s}","agentName":"{s}","nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-            , .{ sig_chain_id, chain_str, agent_address, name, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow
+            , .{ sig_chain_id, chain_str, &addr_hex, name, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow
         else
             std.fmt.bufPrint(&body_buf,
                 \\{{"action":{{"type":"approveAgent","signatureChainId":"{s}","hyperliquidChain":"{s}","agentAddress":"{s}","agentName":null,"nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
-            , .{ sig_chain_id, chain_str, agent_address, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+            , .{ sig_chain_id, chain_str, &addr_hex, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
         return self.exchangeRequestDyn(body);
     }
 
@@ -442,7 +452,7 @@ pub const Client = struct {
         return self.exchangeRequestDyn(body);
     }
 
-    // ── Additional Info Endpoints ─────────────────────────────────
+    // ── Market & Meta Info ───────────────────────────────────────
 
     /// Fetch perpetual markets metadata.
     pub fn perps(self: *Client, dex_name: ?[]const u8) !InfoResult {
@@ -539,6 +549,164 @@ pub const Client = struct {
         return self.infoRequestDyn(body);
     }
 
+    /// Fetch user fills filtered by time range.
+    pub fn userFillsByTime(self: *Client, user: []const u8, start_time: u64, end_time: ?u64) !InfoResult {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFillsByTime","user":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ user, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFillsByTime","user":"{s}","startTime":{d}}}
+            , .{ user, start_time }) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch user fees.
+    pub fn userFees(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userFees", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch user rate limit.
+    pub fn userRateLimit(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userRateLimit", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch portfolio (detailed position view).
+    pub fn portfolio(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "portfolio", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch predicted fundings for all markets.
+    pub fn predictedFundings(self: *Client) !InfoResult {
+        return self.infoRequest(
+            \\{"type":"predictedFundings"}
+        );
+    }
+
+    /// Fetch perps at open interest cap.
+    pub fn perpsAtOpenInterestCap(self: *Client) !InfoResult {
+        return self.infoRequest(
+            \\{"type":"perpsAtOpenInterestCap"}
+        );
+    }
+
+    /// Fetch spot meta and asset contexts.
+    pub fn spotMetaAndAssetCtxs(self: *Client) !InfoResult {
+        return self.infoRequest(
+            \\{"type":"spotMetaAndAssetCtxs"}
+        );
+    }
+
+    /// Fetch token details by token ID.
+    pub fn tokenDetails(self: *Client, token_id: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"tokenDetails","tokenId":"{s}"}}
+        , .{token_id}) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch user non-funding ledger updates.
+    pub fn userNonFundingLedgerUpdates(self: *Client, user: []const u8, start_time: u64, end_time: ?u64) !InfoResult {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userNonFundingLedgerUpdates","user":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ user, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userNonFundingLedgerUpdates","user":"{s}","startTime":{d}}}
+            , .{ user, start_time }) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch user TWAP slice fills.
+    pub fn userTwapSliceFills(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userTwapSliceFills", user);
+        return self.infoRequestDyn(body);
+    }
+
+    // ── Staking Info ──────────────────────────────────────────────
+
+    /// Fetch delegator summary.
+    pub fn delegatorSummary(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "delegatorSummary", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch delegations.
+    pub fn delegations(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "delegations", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch delegator rewards.
+    pub fn delegatorRewards(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "delegatorRewards", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch delegator history.
+    pub fn delegatorHistory(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "delegatorHistory", user);
+        return self.infoRequestDyn(body);
+    }
+
+    // ── Deploy Auction Info ───────────────────────────────────────
+
+    /// Fetch perp deploy auction status.
+    pub fn perpDeployAuctionStatus(self: *Client) !InfoResult {
+        return self.infoRequest(
+            \\{"type":"perpDeployAuctionStatus"}
+        );
+    }
+
+    /// Fetch spot deploy state.
+    pub fn spotDeployState(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "spotDeployState", user);
+        return self.infoRequestDyn(body);
+    }
+
+    // ── Borrow/Lend Info ──────────────────────────────────────────
+
+    /// Fetch borrow/lend user state.
+    pub fn borrowLendUserState(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "borrowLendUserState", user);
+        return self.infoRequestDyn(body);
+    }
+
+    /// Fetch max builder fee for a user/builder pair.
+    pub fn maxBuilderFee(self: *Client, user: []const u8, builder: []const u8) !InfoResult {
+        var buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&buf,
+            \\{{"type":"maxBuilderFee","user":"{s}","builder":"{s}"}}
+        , .{ user, builder }) catch return error.BufferOverflow;
+        return self.infoRequestDyn(body);
+    }
+
+    /// Query user's account abstraction mode.
+    /// Returns a JSON string: "disabled", "unifiedAccount", or "portfolioMargin".
+    pub fn userAbstraction(self: *Client, user: []const u8) !InfoResult {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userAbstraction", user);
+        return self.infoRequestDyn(body);
+    }
+
     /// Fetch spot clearinghouse state for a user.
     pub fn spotClearinghouseState(self: *Client, user: []const u8) !InfoResult {
         var buf: [256]u8 = undefined;
@@ -551,6 +719,606 @@ pub const Client = struct {
     /// Fetch perp meta + asset contexts (funding, OI, mark prices).
     pub fn metaAndAssetCtxs(self: *Client) !InfoResult {
         return self.infoRequestDyn("{\"type\":\"metaAndAssetCtxs\"}");
+    }
+
+    /// Withdraw USDC from the bridge.
+    pub fn withdraw(
+        self: *Client,
+        s: Signer,
+        destination: Address,
+        amount: []const u8,
+        time: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signWithdraw(s, self.chain, destination, amount, time);
+        const chain_str = self.chain.name();
+        const dest_hex = addressToHex(destination);
+
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"withdraw3","signatureChainId":"{s}","hyperliquidChain":"{s}","destination":"{s}","amount":"{s}","time":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(),
+            chain_str,
+            &dest_hex,
+            amount,
+            time,
+            time,
+            sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+
+        return self.exchangeRequestDyn(body);
+    }
+
+    /// Transfer USDC between spot and perp.
+    pub fn usdClassTransfer(
+        self: *Client,
+        s: Signer,
+        amount: []const u8,
+        to_perp: bool,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signUsdClassTransfer(s, self.chain, amount, to_perp, nonce);
+        const chain_str = self.chain.name();
+
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"usdClassTransfer","signatureChainId":"{s}","hyperliquidChain":"{s}","amount":"{s}","toPerp":{s},"nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(),
+            chain_str,
+            amount,
+            if (to_perp) "true" else "false",
+            nonce,
+            nonce,
+            sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+
+        return self.exchangeRequestDyn(body);
+    }
+
+    /// Delegate or undelegate tokens (staking).
+    pub fn tokenDelegate(
+        self: *Client,
+        s: Signer,
+        validator: Address,
+        wei: u64,
+        is_undelegate: bool,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signTokenDelegate(s, self.chain, validator, wei, is_undelegate, nonce);
+        const chain_str = self.chain.name();
+        const val_hex = addressToHex(validator);
+
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"tokenDelegate","signatureChainId":"{s}","hyperliquidChain":"{s}","validator":"{s}","wei":{d},"isUndelegate":{s},"nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(),
+            chain_str,
+            &val_hex,
+            wei,
+            if (is_undelegate) "true" else "false",
+            nonce,
+            nonce,
+            sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+
+        return self.exchangeRequestDyn(body);
+    }
+
+    /// Approve builder fee.
+    pub fn approveBuilderFee(
+        self: *Client,
+        s: Signer,
+        max_fee_rate: []const u8,
+        builder: Address,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signApproveBuilderFee(s, self.chain, max_fee_rate, builder, nonce);
+        const chain_str = self.chain.name();
+        const builder_hex = addressToHex(builder);
+
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"approveBuilderFee","signatureChainId":"{s}","hyperliquidChain":"{s}","maxFeeRate":"{s}","builder":"{s}","nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(),
+            chain_str,
+            max_fee_rate,
+            &builder_hex,
+            nonce,
+            nonce,
+            sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+
+        return self.exchangeRequestDyn(body);
+    }
+
+    /// Transfer to/from a vault.
+    pub fn vaultTransfer(
+        self: *Client,
+        s: Signer,
+        vt: types.VaultTransfer,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signVaultTransfer(s, vt, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, vt, .vaultTransfer, vault_address, expires_after);
+    }
+
+    /// Create a sub-account.
+    pub fn createSubAccount(
+        self: *Client,
+        s: Signer,
+        csa: types.CreateSubAccount,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signCreateSubAccount(s, csa, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, csa, .createSubAccount, vault_address, expires_after);
+    }
+
+    /// Transfer USDC to/from a sub-account.
+    pub fn subAccountTransfer(
+        self: *Client,
+        s: Signer,
+        sat: types.SubAccountTransfer,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signSubAccountTransfer(s, sat, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, sat, .subAccountTransfer, vault_address, expires_after);
+    }
+
+    /// Transfer spot tokens to/from a sub-account.
+    pub fn subAccountSpotTransfer(
+        self: *Client,
+        s: Signer,
+        sst: types.SubAccountSpotTransfer,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signSubAccountSpotTransfer(s, sst, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, sst, .subAccountSpotTransfer, vault_address, expires_after);
+    }
+
+    /// Place a native TWAP order.
+    pub fn twapOrder(
+        self: *Client,
+        s: Signer,
+        tw: types.TwapOrder,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signTwapOrder(s, tw, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, tw, .twapOrder, vault_address, expires_after);
+    }
+
+    /// Cancel a native TWAP order.
+    pub fn twapCancel(
+        self: *Client,
+        s: Signer,
+        tc: types.TwapCancel,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signTwapCancel(s, tc, nonce, self.chain, vault_address, expires_after);
+        return self.sendExchangeRawFull(sig, nonce, tc, .twapCancel, vault_address, expires_after);
+    }
+
+    // ── Dex Abstraction ─────────────────────────────────────────
+
+    /// Enable dex abstraction for the agent.
+    pub fn agentEnableDexAbstraction(
+        self: *Client,
+        s: Signer,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signAgentEnableDexAbstraction(s, nonce, self.chain, vault_address, expires_after);
+        var body_buf: [512]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&body_buf);
+        const w = fbs.writer();
+        const sig_json = sigJsonStr(sig);
+        try std.fmt.format(w, "{{\"action\":{{\"type\":\"agentEnableDexAbstraction\"}},\"nonce\":{d},\"signature\":{s}", .{ nonce, sigJsonSlice(&sig_json) });
+        try writeOptionalAddress(w, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(w, ",\"expiresAfter\":", expires_after);
+        try w.writeAll("}");
+        return self.exchangeRequestDyn(fbs.getWritten());
+    }
+
+    pub fn agentSetAbstraction(
+        self: *Client,
+        s: Signer,
+        abstraction_json: []const u8,
+        nonce: u64,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
+        const sig = try signing.signAgentSetAbstraction(s, abstraction_json, nonce, self.chain, vault_address, expires_after);
+        var body_buf: [2048]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&body_buf);
+        const w = fbs.writer();
+        const sig_json = sigJsonStr(sig);
+        try std.fmt.format(w, "{{\"action\":{{\"type\":\"agentSetAbstraction\",\"abstraction\":\"{s}\"}},\"nonce\":{d},\"signature\":{s}", .{ abstraction_json, nonce, sigJsonSlice(&sig_json) });
+        try writeOptionalAddress(w, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(w, ",\"expiresAfter\":", expires_after);
+        try w.writeAll("}");
+        return self.exchangeRequestDyn(fbs.getWritten());
+    }
+
+    pub fn userDexAbstraction(
+        self: *Client,
+        s: Signer,
+        user: Address,
+        enabled: bool,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signUserDexAbstraction(s, self.chain, user, enabled, nonce);
+        const chain_str = self.chain.name();
+        const user_hex = addressToHex(user);
+        var body_buf: [1024]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"userDexAbstraction","signatureChainId":"{s}","hyperliquidChain":"{s}","user":"{s}","enabled":{s},"nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(), chain_str, &user_hex,
+            if (enabled) "true" else "false",
+            nonce, nonce, sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    pub fn userSetAbstraction(
+        self: *Client,
+        s: Signer,
+        user: Address,
+        abstraction: []const u8,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signUserSetAbstraction(s, self.chain, user, abstraction, nonce);
+        const chain_str = self.chain.name();
+        const user_hex = addressToHex(user);
+        var body_buf: [2048]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{{"type":"userSetAbstraction","signatureChainId":"{s}","hyperliquidChain":"{s}","user":"{s}","abstraction":"{s}","nonce":{d}}},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{
+            self.chain.sigChainId(), chain_str, &user_hex,
+            abstraction, nonce, nonce, sigJsonSlice(&sigJsonStr(sig)),
+        }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    // ── Spot Deploy ───────────────────────────────────────────────
+
+    /// Generic spot deploy: signs and sends a pre-packed msgpack action.
+    fn sendSpotDeploy(
+        self: *Client,
+        s: Signer,
+        packed_action: []const u8,
+        json_body: []const u8,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signSpotDeploy(s, packed_action, nonce, self.chain, null);
+        var body_buf: [4096]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{s},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{ json_body, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    pub fn spotDeployRegisterToken(self: *Client, s: Signer, rt: types.SpotDeployRegisterToken, nonce: u64) !ExchangeResult {
+        var buf: [1024]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployRegisterToken(&p, rt);
+        var json_buf: [1024]u8 = undefined;
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","registerToken2":{{"spec":{{"name":"{s}","szDecimals":{d},"weiDecimals":{d}}},"maxGas":{d},"fullName":"{s}"}}}}
+        , .{ rt.name, rt.sz_decimals, rt.wei_decimals, rt.max_gas, rt.full_name }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    pub fn spotDeployGenesis(self: *Client, s: Signer, g: types.SpotDeployGenesis, nonce: u64) !ExchangeResult {
+        var buf: [512]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployGenesis(&p, g);
+        var json_buf: [512]u8 = undefined;
+        const nh = if (g.no_hyperliquidity) ",\"noHyperliquidity\":true" else "";
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","genesis":{{"token":{d},"maxSupply":"{s}"{s}}}}}
+        , .{ g.token, g.max_supply, nh }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    pub fn spotDeployRegisterSpot(self: *Client, s: Signer, rs: types.SpotDeployRegisterSpot, nonce: u64) !ExchangeResult {
+        var buf: [256]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployRegisterSpot(&p, rs);
+        var json_buf: [256]u8 = undefined;
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","registerSpot":{{"tokens":[{d},{d}]}}}}
+        , .{ rs.base_token, rs.quote_token }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    pub fn spotDeployTokenAction(self: *Client, s: Signer, variant: []const u8, token: u32, nonce: u64) !ExchangeResult {
+        var buf: [256]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployTokenAction(&p, variant, token);
+        var json_buf: [256]u8 = undefined;
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","{s}":{{"token":{d}}}}}
+        , .{ variant, token }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    pub fn spotDeployUserGenesis(self: *Client, s: Signer, ug: types.SpotDeployUserGenesis, nonce: u64) !ExchangeResult {
+        var buf: [4096]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployUserGenesis(&p, ug);
+        var json_buf: [8192]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try w.writeAll("{\"type\":\"spotDeploy\",\"userGenesis\":{\"token\":");
+        try std.fmt.format(w, "{d}", .{ug.token});
+        try w.writeAll(",\"userAndWei\":[");
+        for (ug.user_and_wei, 0..) |pair, i| {
+            if (i > 0) try w.writeAll(",");
+            try std.fmt.format(w, "[\"{s}\",\"{s}\"]", .{ pair[0], pair[1] });
+        }
+        try w.writeAll("],\"existingTokenAndWei\":[");
+        for (ug.existing_token_and_wei, 0..) |pair, i| {
+            if (i > 0) try w.writeAll(",");
+            try std.fmt.format(w, "[{d},\"{s}\"]", .{ pair.token, pair.wei });
+        }
+        try w.writeAll("]}}");
+        return self.sendSpotDeploy(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    pub fn spotDeployRegisterHyperliquidity(self: *Client, s: Signer, rh: types.SpotDeployRegisterHyperliquidity, nonce: u64) !ExchangeResult {
+        var buf: [512]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployRegisterHyperliquidity(&p, rh);
+        var json_buf: [512]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try std.fmt.format(w, "{{\"type\":\"spotDeploy\",\"registerHyperliquidity\":{{\"spot\":{d},\"startPx\":\"{s}\",\"orderSz\":\"{s}\",\"nOrders\":{d}", .{ rh.spot, rh.start_px, rh.order_sz, rh.n_orders });
+        if (rh.n_seeded_levels) |nsl| {
+            try std.fmt.format(w, ",\"nSeededLevels\":{d}", .{nsl});
+        }
+        try w.writeAll("}}");
+        return self.sendSpotDeploy(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    pub fn spotDeployFreezeUser(self: *Client, s: Signer, token: u32, user: []const u8, freeze: bool, nonce: u64) !ExchangeResult {
+        var buf: [256]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeployFreezeUser(&p, token, user, freeze);
+        var json_buf: [256]u8 = undefined;
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","freezeUser":{{"token":{d},"user":"{s}","freeze":{s}}}}}
+        , .{ token, user, if (freeze) "true" else "false" }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    pub fn spotDeploySetTradingFeeShare(self: *Client, s: Signer, token: u32, share: []const u8, nonce: u64) !ExchangeResult {
+        var buf: [256]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionSpotDeploySetTradingFeeShare(&p, token, share);
+        var json_buf: [256]u8 = undefined;
+        const json_body = std.fmt.bufPrint(&json_buf,
+            \\{{"type":"spotDeploy","setDeployerTradingFeeShare":{{"token":{d},"share":"{s}"}}}}
+        , .{ token, share }) catch return error.BufferOverflow;
+        return self.sendSpotDeploy(s, p.written(), json_body, nonce);
+    }
+
+    // ── Perp Deploy ───────────────────────────────────────────────
+
+    fn sendPerpDeploy(
+        self: *Client,
+        s: Signer,
+        packed_action: []const u8,
+        json_body: []const u8,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signPerpDeploy(s, packed_action, nonce, self.chain, null);
+        var body_buf: [8192]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{s},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{ json_body, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    pub fn perpDeployRegisterAsset(self: *Client, s: Signer, ra: types.PerpDeployRegisterAsset, nonce: u64) !ExchangeResult {
+        var buf: [2048]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionPerpDeployRegisterAsset(&p, ra);
+        var json_buf: [2048]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try w.writeAll("{\"type\":\"perpDeploy\",\"registerAsset\":{");
+        if (ra.max_gas) |mg| {
+            try std.fmt.format(w, "\"maxGas\":{d},", .{mg});
+        }
+        try std.fmt.format(w, "\"assetRequest\":{{\"coin\":\"{s}\",\"szDecimals\":{d},\"oraclePx\":\"{s}\",\"marginTableId\":{d},\"onlyIsolated\":{s}}}", .{
+            ra.coin, ra.sz_decimals, ra.oracle_px, ra.margin_table_id,
+            if (ra.only_isolated) "true" else "false",
+        });
+        try std.fmt.format(w, ",\"dex\":\"{s}\"", .{ra.dex});
+        if (ra.schema_full_name != null or ra.schema_collateral_token != null or ra.schema_oracle_updater != null) {
+            try w.writeAll(",\"schema\":{");
+            try std.fmt.format(w, "\"fullName\":\"{s}\"", .{ra.schema_full_name orelse ""});
+            if (ra.schema_collateral_token) |ct| {
+                try std.fmt.format(w, ",\"collateralToken\":{d}", .{ct});
+            }
+            if (ra.schema_oracle_updater) |ou| {
+                try std.fmt.format(w, ",\"oracleUpdater\":\"{s}\"", .{ou});
+            } else {
+                try w.writeAll(",\"oracleUpdater\":null");
+            }
+            try w.writeAll("}");
+        } else {
+            try w.writeAll(",\"schema\":null");
+        }
+        try w.writeAll("}}");
+        return self.sendPerpDeploy(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    pub fn perpDeploySetOracle(
+        self: *Client,
+        s: Signer,
+        dex: []const u8,
+        oracle_pxs: []const types.OraclePxEntry,
+        mark_pxs: []const []const types.OraclePxEntry,
+        external_perp_pxs: []const types.OraclePxEntry,
+        nonce: u64,
+    ) !ExchangeResult {
+        var buf: [8192]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionPerpDeploySetOracle(&p, dex, oracle_pxs, mark_pxs, external_perp_pxs);
+        var json_buf: [8192]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try std.fmt.format(w, "{{\"type\":\"perpDeploy\",\"setOracle\":{{\"dex\":\"{s}\",\"oraclePxs\":[", .{dex});
+        for (oracle_pxs, 0..) |entry, i| {
+            if (i > 0) try w.writeAll(",");
+            try std.fmt.format(w, "[\"{s}\",\"{s}\"]", .{ entry.coin, entry.px });
+        }
+        try w.writeAll("],\"markPxs\":[");
+        for (mark_pxs, 0..) |group, gi| {
+            if (gi > 0) try w.writeAll(",");
+            try w.writeAll("[");
+            for (group, 0..) |entry, i| {
+                if (i > 0) try w.writeAll(",");
+                try std.fmt.format(w, "[\"{s}\",\"{s}\"]", .{ entry.coin, entry.px });
+            }
+            try w.writeAll("]");
+        }
+        try w.writeAll("],\"externalPerpPxs\":[");
+        for (external_perp_pxs, 0..) |entry, i| {
+            if (i > 0) try w.writeAll(",");
+            try std.fmt.format(w, "[\"{s}\",\"{s}\"]", .{ entry.coin, entry.px });
+        }
+        try w.writeAll("]}}");
+        return self.sendPerpDeploy(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    // ── Validator/Signer ──────────────────────────────────────────
+
+    fn sendCSigner(
+        self: *Client,
+        s: Signer,
+        packed_action: []const u8,
+        json_body: []const u8,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signCSignerAction(s, packed_action, nonce, self.chain, null);
+        var body_buf: [512]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{s},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{ json_body, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    pub fn cSignerJailSelf(self: *Client, s: Signer, nonce: u64) !ExchangeResult {
+        var buf: [128]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionCSignerJailSelf(&p);
+        return self.sendCSigner(s, p.written(), "{\"type\":\"CSignerAction\",\"jailSelf\":null}", nonce);
+    }
+
+    pub fn cSignerUnjailSelf(self: *Client, s: Signer, nonce: u64) !ExchangeResult {
+        var buf: [128]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionCSignerUnjailSelf(&p);
+        return self.sendCSigner(s, p.written(), "{\"type\":\"CSignerAction\",\"unjailSelf\":null}", nonce);
+    }
+
+    fn sendCValidator(
+        self: *Client,
+        s: Signer,
+        packed_action: []const u8,
+        json_body: []const u8,
+        nonce: u64,
+    ) !ExchangeResult {
+        const sig = try signing.signCValidatorAction(s, packed_action, nonce, self.chain, null);
+        var body_buf: [4096]u8 = undefined;
+        const body = std.fmt.bufPrint(&body_buf,
+            \\{{"action":{s},"nonce":{d},"signature":{s},"vaultAddress":null,"expiresAfter":null}}
+        , .{ json_body, nonce, sigJsonSlice(&sigJsonStr(sig)) }) catch return error.BufferOverflow;
+        return self.exchangeRequestDyn(body);
+    }
+
+    pub fn cValidatorRegister(self: *Client, s: Signer, reg: types.ValidatorRegister, nonce: u64) !ExchangeResult {
+        var buf: [1024]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionCValidatorRegister(&p, reg.profile, reg.unjailed, reg.initial_wei);
+        var json_buf: [2048]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try std.fmt.format(w, "{{\"type\":\"CValidatorAction\",\"register\":{{\"profile\":{{\"node_ip\":{{\"Ip\":\"{s}\"}},\"name\":\"{s}\",\"description\":\"{s}\",\"delegations_disabled\":{s},\"commission_bps\":{d},\"signer\":\"{s}\"}},\"unjailed\":{s},\"initial_wei\":{d}}}}}", .{
+            reg.profile.node_ip, reg.profile.name, reg.profile.description,
+            if (reg.profile.delegations_disabled) "true" else "false",
+            reg.profile.commission_bps, reg.profile.signer,
+            if (reg.unjailed) "true" else "false", reg.initial_wei,
+        });
+        return self.sendCValidator(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    pub fn cValidatorChangeProfile(self: *Client, s: Signer, cp: types.ValidatorProfileChange, nonce: u64) !ExchangeResult {
+        var buf: [1024]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionCValidatorChangeProfile(&p, cp);
+        var json_buf: [2048]u8 = undefined;
+        var fbs = std.io.fixedBufferStream(&json_buf);
+        const w = fbs.writer();
+        try w.writeAll("{\"type\":\"CValidatorAction\",\"changeProfile\":{");
+        if (cp.node_ip) |ip| {
+            try std.fmt.format(w, "\"node_ip\":{{\"Ip\":\"{s}\"}}", .{ip});
+        } else {
+            try w.writeAll("\"node_ip\":null");
+        }
+        if (cp.name) |n| {
+            try std.fmt.format(w, ",\"name\":\"{s}\"", .{n});
+        } else {
+            try w.writeAll(",\"name\":null");
+        }
+        if (cp.description) |d| {
+            try std.fmt.format(w, ",\"description\":\"{s}\"", .{d});
+        } else {
+            try w.writeAll(",\"description\":null");
+        }
+        try std.fmt.format(w, ",\"unjailed\":{s}", .{if (cp.unjailed) "true" else "false"});
+        if (cp.disable_delegations) |dd| {
+            try std.fmt.format(w, ",\"disable_delegations\":{s}", .{if (dd) "true" else "false"});
+        } else {
+            try w.writeAll(",\"disable_delegations\":null");
+        }
+        if (cp.commission_bps) |cb| {
+            try std.fmt.format(w, ",\"commission_bps\":{d}", .{cb});
+        } else {
+            try w.writeAll(",\"commission_bps\":null");
+        }
+        if (cp.signer) |sg| {
+            try std.fmt.format(w, ",\"signer\":\"{s}\"", .{sg});
+        } else {
+            try w.writeAll(",\"signer\":null");
+        }
+        try w.writeAll("}}");
+        return self.sendCValidator(s, p.written(), fbs.getWritten(), nonce);
+    }
+
+    pub fn cValidatorUnregister(self: *Client, s: Signer, nonce: u64) !ExchangeResult {
+        var buf: [128]u8 = undefined;
+        var p = msgpack.Packer.init(&buf);
+        try types.packActionCValidatorUnregister(&p);
+        return self.sendCValidator(s, p.written(), "{\"type\":\"CValidatorAction\",\"unregister\":null}", nonce);
     }
 
     /// Send a pre-built ActionRequest (for advanced use / multi-sig).
@@ -797,6 +1565,31 @@ pub const Client = struct {
         return self.infoTyped(R.ActiveAssetData, body);
     }
 
+    pub fn getUserFees(self: *Client, user: []const u8) !Parsed(R.UserFees) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userFees", user);
+        return self.infoTyped(R.UserFees, body);
+    }
+
+    pub fn getUserRateLimit(self: *Client, user: []const u8) !Parsed(R.UserRateLimit) {
+        var buf: [256]u8 = undefined;
+        const body = try formatInfoBodySimple(&buf, "userRateLimit", user);
+        return self.infoTyped(R.UserRateLimit, body);
+    }
+
+    pub fn getUserFillsByTime(self: *Client, user: []const u8, start_time: u64, end_time: ?u64) !Parsed([]R.Fill) {
+        var buf: [512]u8 = undefined;
+        const body = if (end_time) |et|
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFillsByTime","user":"{s}","startTime":{d},"endTime":{d}}}
+            , .{ user, start_time, et }) catch return error.BufferOverflow
+        else
+            std.fmt.bufPrint(&buf,
+                \\{{"type":"userFillsByTime","user":"{s}","startTime":{d}}}
+            , .{ user, start_time }) catch return error.BufferOverflow;
+        return self.infoTyped([]R.Fill, body);
+    }
+
     // ── Internal HTTP helpers ─────────────────────────────────────
 
     pub const InfoResult = struct {
@@ -898,17 +1691,12 @@ pub const Client = struct {
 
     fn sendExchange(
         self: *Client,
-        action_type: []const u8,
         action_data: anytype,
         sig: Signature,
         nonce: u64,
         vault_address: ?Address,
         expires_after: ?u64,
     ) !ExchangeResult {
-        _ = action_type;
-        _ = vault_address;
-        _ = expires_after;
-
         var body_buf: [8192]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&body_buf);
         const writer = fbs.writer();
@@ -916,10 +1704,12 @@ pub const Client = struct {
         try writer.writeAll("{\"action\":");
         try writeActionJson(writer, action_data);
         const sig_json_1 = sigJsonStr(sig);
-        try std.fmt.format(writer, ",\"nonce\":{d},\"signature\":{s},\"vaultAddress\":null,\"expiresAfter\":null", .{
+        try std.fmt.format(writer, ",\"nonce\":{d},\"signature\":{s}", .{
             nonce,
             sigJsonSlice(&sig_json_1),
         });
+        try writeOptionalAddress(writer, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(writer, ",\"expiresAfter\":", expires_after);
         try writer.writeAll("}");
         return self.exchangeRequestDyn(fbs.getWritten());
     }
@@ -932,6 +1722,18 @@ pub const Client = struct {
         action_data: anytype,
         tag: types.ActionTag,
     ) !ExchangeResult {
+        return self.sendExchangeRawFull(sig, nonce, action_data, tag, null, null);
+    }
+
+    fn sendExchangeRawFull(
+        self: *Client,
+        sig: Signature,
+        nonce: u64,
+        action_data: anytype,
+        tag: types.ActionTag,
+        vault_address: ?Address,
+        expires_after: ?u64,
+    ) !ExchangeResult {
         var body_buf: [8192]u8 = undefined;
         var fbs = std.io.fixedBufferStream(&body_buf);
         const writer = fbs.writer();
@@ -939,12 +1741,51 @@ pub const Client = struct {
         try writer.writeAll("{\"action\":");
         try writeActionJsonTagged(writer, action_data, tag);
         const sig_json = sigJsonStr(sig);
-        try std.fmt.format(writer, ",\"nonce\":{d},\"signature\":{s},\"vaultAddress\":null,\"expiresAfter\":null", .{
+        try std.fmt.format(writer, ",\"nonce\":{d},\"signature\":{s}", .{
             nonce,
             sigJsonSlice(&sig_json),
         });
+        try writeOptionalAddress(writer, ",\"vaultAddress\":", vault_address);
+        try writeOptionalU64(writer, ",\"expiresAfter\":", expires_after);
         try writer.writeAll("}");
         return self.exchangeRequestDyn(fbs.getWritten());
+    }
+
+    fn writeOptionalAddress(writer: anytype, prefix: []const u8, addr: ?Address) !void {
+        try writer.writeAll(prefix);
+        if (addr) |a| {
+            try writer.writeAll("\"0x");
+            for (a) |b| {
+                const hex = "0123456789abcdef";
+                try writer.writeAll(&[_]u8{ hex[b >> 4], hex[b & 0xf] });
+            }
+            try writer.writeAll("\"");
+        } else {
+            try writer.writeAll("null");
+        }
+    }
+
+    fn writeOptionalU64(writer: anytype, prefix: []const u8, val: ?u64) !void {
+        try writer.writeAll(prefix);
+        if (val) |v| {
+            try std.fmt.format(writer, "{d}", .{v});
+        } else {
+            try writer.writeAll("null");
+        }
+    }
+
+    /// Format Address as "0x" + lowercase hex into a fixed buffer.
+    const addressToHex = eip712.addressToHex;
+
+    /// Parse a hex address string ("0x..." or raw hex) into 20 bytes.
+    pub fn parseAddress(hex: []const u8) !Address {
+        const s = if (hex.len >= 2 and hex[0] == '0' and (hex[1] == 'x' or hex[1] == 'X')) hex[2..] else hex;
+        if (s.len != 40) return error.InvalidAddress;
+        var addr: Address = undefined;
+        for (0..20) |i| {
+            addr[i] = std.fmt.parseInt(u8, s[i * 2 ..][0..2], 16) catch return error.InvalidAddress;
+        }
+        return addr;
     }
 
     const HttpResponse = struct {
@@ -1049,6 +1890,43 @@ fn writeActionJsonTagged(writer: anytype, action_data: anytype, tag: types.Actio
         });
     } else if (T == types.SetReferrer) {
         try std.fmt.format(writer, ",\"code\":\"{s}\"}}", .{action_data.code});
+    } else if (T == types.VaultTransfer) {
+        try std.fmt.format(writer, ",\"vaultAddress\":\"{s}\",\"isDeposit\":{s},\"usd\":{d}}}", .{
+            action_data.vault_address,
+            if (action_data.is_deposit) "true" else "false",
+            action_data.usd,
+        });
+    } else if (T == types.CreateSubAccount) {
+        try std.fmt.format(writer, ",\"name\":\"{s}\"}}", .{action_data.name});
+    } else if (T == types.SubAccountTransfer) {
+        try std.fmt.format(writer, ",\"subAccountUser\":\"{s}\",\"isDeposit\":{s},\"usd\":{d}}}", .{
+            action_data.sub_account_user,
+            if (action_data.is_deposit) "true" else "false",
+            action_data.usd,
+        });
+    } else if (T == types.SubAccountSpotTransfer) {
+        try std.fmt.format(writer, ",\"subAccountUser\":\"{s}\",\"isDeposit\":{s},\"token\":\"{s}\",\"amount\":\"{s}\"}}", .{
+            action_data.sub_account_user,
+            if (action_data.is_deposit) "true" else "false",
+            action_data.token,
+            action_data.amount,
+        });
+    } else if (T == types.TwapOrder) {
+        var sz_buf: [64]u8 = undefined;
+        const sz_str = action_data.sz.normalize().toString(&sz_buf) catch return error.BufferOverflow;
+        try std.fmt.format(writer, ",\"twap\":{{\"a\":{d},\"b\":{s},\"s\":\"{s}\",\"r\":{s},\"m\":{d},\"t\":{s}}}}}", .{
+            action_data.asset,
+            if (action_data.is_buy) "true" else "false",
+            sz_str,
+            if (action_data.reduce_only) "true" else "false",
+            action_data.duration_min,
+            if (action_data.randomize) "true" else "false",
+        });
+    } else if (T == types.TwapCancel) {
+        try std.fmt.format(writer, ",\"a\":{d},\"t\":{d}}}", .{
+            action_data.asset,
+            action_data.twap_id,
+        });
     } else {
         try writer.writeAll("}");
     }

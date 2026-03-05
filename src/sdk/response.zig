@@ -472,6 +472,81 @@ pub const Liquidation = struct {
     liquidated_account_value: ?Decimal = null,
 };
 
+// ── User Fees / Rate Limit ────────────────────────────────────
+
+pub const UserFees = struct {
+    activeReferralDiscount: ?Decimal = null,
+    dailyUserVlm: ?[]DailyUserVlm = null,
+    feeSchedule: ?FeeSchedule = null,
+    userCrossRate: ?Decimal = null,
+    userAddRate: ?Decimal = null,
+    readiness: ?[]const u8 = null,
+};
+
+pub const DailyUserVlm = struct {
+    date: []const u8 = "",
+    userCross: ?Decimal = null,
+    userAdd: ?Decimal = null,
+    exchange: ?Decimal = null,
+};
+
+pub const FeeSchedule = struct {
+    cross: ?[]FeeTier = null,
+    add: ?[]FeeTier = null,
+};
+
+pub const FeeTier = struct {
+    minVlm: ?Decimal = null,
+    rate: ?Decimal = null,
+};
+
+pub const UserRateLimit = struct {
+    cumVlm: ?Decimal = null,
+    nRequestsUsed: ?u64 = null,
+    nRequestsCap: ?u64 = null,
+};
+
+// ── Staking Types ─────────────────────────────────────────────
+
+pub const DelegatorSummary = struct {
+    delegated: ?Decimal = null,
+    undelegating: ?Decimal = null,
+    totalRewards: ?Decimal = null,
+    pendingRewards: ?Decimal = null,
+    nValidators: ?u32 = null,
+};
+
+pub const Delegation = struct {
+    validator: []const u8 = "",
+    amount: ?Decimal = null,
+    lockedUntil: ?u64 = null,
+};
+
+pub const DelegatorReward = struct {
+    validator: []const u8 = "",
+    amount: ?Decimal = null,
+    source: ?[]const u8 = null,
+};
+
+pub const DelegatorHistoryEntry = struct {
+    time: u64 = 0,
+    delta: ?std.json.Value = null,
+    hash: ?[]const u8 = null,
+};
+
+// ── Borrow/Lend Types ─────────────────────────────────────────
+
+pub const BorrowLendPosition = struct {
+    coin: []const u8 = "",
+    amount: ?Decimal = null,
+    entryRate: ?Decimal = null,
+    type: []const u8 = "",
+};
+
+pub const BorrowLendUserState = struct {
+    positions: ?[]BorrowLendPosition = null,
+};
+
 
 
 // ── Nonce Handler ─────────────────────────────────────────────
