@@ -7,42 +7,42 @@ Auto-detects OS and architecture, then installs to:
 - `~/.local/bin` when run as a regular user
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh
 ```
 
 ### Install Options
 
 ```bash
 # Explicit install directory
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
 
 # System-wide install
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh -s -- --system
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh -s -- --system
 ```
 
 ## Manual Download
 
-Download from [GitHub Releases](https://github.com/vaniiiii/hlz/releases/latest):
+Download from [GitHub Releases](https://github.com/dzmbs/hlz/releases/latest):
 
 :::code-group
 
 ```bash [macOS (Apple Silicon)]
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-arm64
+curl -fsSL -o hlz https://github.com/dzmbs/hlz/releases/latest/download/hlz-darwin-arm64
 chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [macOS (Intel)]
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-darwin-x64
+curl -fsSL -o hlz https://github.com/dzmbs/hlz/releases/latest/download/hlz-darwin-x64
 chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [Linux (x86_64)]
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-x64
+curl -fsSL -o hlz https://github.com/dzmbs/hlz/releases/latest/download/hlz-linux-x64
 chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
 ```bash [Linux (aarch64)]
-curl -fsSL -o hlz https://github.com/vaniiiii/hlz/releases/latest/download/hlz-linux-arm64
+curl -fsSL -o hlz https://github.com/dzmbs/hlz/releases/latest/download/hlz-linux-arm64
 chmod +x hlz && mv hlz "$HOME/.local/bin/"
 ```
 
@@ -57,7 +57,7 @@ chmod +x hlz && mv hlz "$HOME/.local/bin/"
 Requires [Zig 0.15.2](https://ziglang.org/download/).
 
 ```bash
-git clone https://github.com/vaniiiii/hlz
+git clone https://github.com/dzmbs/hlz
 cd hlz
 
 # Production build (827KB stripped binary)
@@ -79,7 +79,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/vaniiiii/hlz#main",
+        .url = "git+https://github.com/dzmbs/hlz#main",
     },
 },
 ```
@@ -104,7 +104,7 @@ hlz price BTC
 ## Updating
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh
 ```
 
 Or from source:

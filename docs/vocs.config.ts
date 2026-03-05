@@ -12,12 +12,12 @@ export default defineConfig({
   logoUrl: "/hlz-logo-dark.svg",
   iconUrl: "/favicon.svg",
   editLink: {
-    link: "https://github.com/vaniiiii/hlz/edit/main/docs/pages/:path",
+    link: "https://github.com/dzmbs/hlz/edit/main/docs/pages/:path",
     text: "Edit on GitHub",
   },
   socials: [
     {
-      link: "https://github.com/vaniiiii/hlz",
+      link: "https://github.com/dzmbs/hlz",
       icon: "github",
     },
   ],

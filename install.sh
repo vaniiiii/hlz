@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="vaniiiii/hlz"
+REPO="dzmbs/hlz"
 
 # Detect OS
 OS=$(uname -s)

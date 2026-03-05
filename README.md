@@ -25,7 +25,7 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="https://vaniiiii.github.io/hlz">Docs</a> ·
+  <a href="https://dzmbs.github.io/hlz">Docs</a> ·
   <a href="#credits">Credits</a>
 </p>
 
@@ -37,8 +37,8 @@ A Zig implementation of the Hyperliquid SDK with a CLI and trading terminal. Two
 
 | Binary | Size | What it does |
 |--------|------|-------------|
-| `hlz` | 827 KB | 38-command CLI — market data, trading, transfers, streaming |
-| `hlz-terminal` | 971 KB | Trading terminal — candlestick chart, order book, trade tape |
+| `hlz` | 870 KB | 45-command CLI — market data, trading, transfers, streaming |
+| `hlz-terminal` | 1014 KB | Trading terminal — candlestick chart, order book, trade tape |
 
 Both are static binaries. Pipe-aware — tables on TTY, JSON when piped.
 
@@ -47,7 +47,7 @@ Both are static binaries. Pipe-aware — tables on TTY, JSON when piped.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh
 ```
 
 Or download a binary manually from [Releases](../../releases/latest).
@@ -55,7 +55,7 @@ Or download a binary manually from [Releases](../../releases/latest).
 **From source** (requires [Zig 0.15.2](https://ziglang.org/download/)):
 
 ```bash
-git clone https://github.com/vaniiiii/hlz
+git clone https://github.com/dzmbs/hlz
 cd hlz
 zig build -Doptimize=ReleaseSmall
 # Binaries in zig-out/bin/hlz and zig-out/bin/hlz-terminal
@@ -66,7 +66,7 @@ zig build -Doptimize=ReleaseSmall
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/vaniiiii/hlz#main",
+        .url = "git+https://github.com/dzmbs/hlz#main",
     },
 },
 ```
@@ -264,7 +264,7 @@ src/
 ├── lib/          Primitives (crypto, encoding, math) — no Hyperliquid knowledge
 ├── sdk/          Hyperliquid SDK (client, ws, signing, types) — imports lib/
 ├── tui/          TUI framework (Buffer, Terminal, Layout, List, Chart) — standalone
-├── cli/          CLI tool (38 commands) — imports sdk/ + tui/
+├── cli/          CLI tool (45 commands) — imports sdk/ + tui/
 └── terminal/     Trading terminal — imports sdk/ + tui/
 ```
 
@@ -276,14 +276,14 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 
 | | |
 |---|---|
-| `hlz` binary | 827 KB |
-| `hlz-terminal` binary | 971 KB |
-| Source | ~16,000 lines |
-| Commands | 38 |
-| HTTP endpoints | 30 (18 info + 12 exchange) |
+| `hlz` binary | 870 KB |
+| `hlz-terminal` binary | 1014 KB |
+| Source | ~18,800 lines |
+| Commands | 44 |
+| HTTP endpoints | 60+ (info + exchange) |
 | WS subscriptions | 13 types |
 | Response types | 62 |
-| Unit tests | 161 |
+| Unit tests | 183 |
 | E2E tests | 17 |
 
 ---
@@ -292,10 +292,10 @@ Dependencies point down only. `lib/` and `tui/` depend on nothing.
 
 ```bash
 zig build                              # Debug
-zig build -Doptimize=ReleaseSmall      # Small binary (827KB)
+zig build -Doptimize=ReleaseSmall      # Small binary (870KB)
 zig build -Doptimize=ReleaseFast       # Fast binary
 zig build -Dfast-crypto=true           # Custom GLV (~3.4x faster signing)
-zig build test                         # Unit tests (161)
+zig build test                         # Unit tests (183)
 zig build bench                        # Signing benchmarks
 zig build e2e                          # Live API tests
 ```

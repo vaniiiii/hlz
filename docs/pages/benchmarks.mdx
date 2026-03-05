@@ -45,8 +45,8 @@ Both produce identical signatures — the switch only affects which algorithm co
 
 | Component | Size |
 |-----------|------|
-| `hlz` (ReleaseSmall, stripped) | 827 KB |
-| `hlz-terminal` (ReleaseSmall, stripped) | 768 KB |
+| `hlz` (ReleaseSmall, stripped) | 870 KB |
+| `hlz-terminal` (ReleaseSmall, stripped) | 1014 KB |
 | SDK only (no HTTP/TLS) | 116 KB |
 
 ## Build Time
@@ -56,7 +56,7 @@ Clean build takes ~3 seconds on Apple M4. Zig's compilation model helps here.
 ## Reproduce
 
 ```bash
-git clone https://github.com/vaniiiii/hlz
+git clone https://github.com/dzmbs/hlz
 cd hlz
 zig build bench                        # stdlib (default)
 zig build bench -Dfast-crypto=true     # custom GLV

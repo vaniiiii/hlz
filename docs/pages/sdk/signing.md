@@ -21,7 +21,7 @@ const sig = try signing.signOrder(signer, batch, nonce, .mainnet, null, null);
 
 ### Typed Data Path (Transfers, Approvals)
 
-Used for: `usdSend`, `spotSend`, `sendAsset`, `updateLeverage`, `updateIsolatedMargin`, `approveAgent`, `setReferrer`
+Used for: `sendUsdc`, `spotSend`, `sendAsset`, `withdraw`, `usdClassTransfer`, `approveAgent`, `approveBuilderFee`, `tokenDelegate`, `userDexAbstraction`, `userSetAbstraction`, `convertToMultiSig`
 
 ```
 Fields → EIP-712 struct hash → Arbitrum domain (chainId 42161 mainnet / 421614 testnet)
@@ -62,12 +62,20 @@ The msgpack encoding must be **byte-exact** with Rust's `rmp-serde::to_vec_named
 
 ## EIP-712 Details
 
-All 7 EIP-712 type hashes are computed at **compile time**:
+All 14 EIP-712 type hashes are computed at **compile time** — no runtime string hashing or allocation.
 
-```zig
-// Comptime: typeHash("Agent", "Agent(address source,address connectionId,...)")
-// No runtime string hashing or allocation
+## Crypto Backend
+
+By default, hlz uses Zig's stdlib secp256k1 (constant-time, safe for servers). For latency-sensitive use cases, opt into the custom GLV backend:
+
+```bash
+zig build -Dfast-crypto=true    # ~3.4x faster signing
 ```
+
+| Backend | Median sign_order | Use case |
+|---------|------------------|----------|
+| stdlib (default) | ~112 µs | Servers, production |
+| custom GLV | ~34 µs | Trading bots, low-latency |
 
 The domain separator uses:
 - `name = "Exchange"`

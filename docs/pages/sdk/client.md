@@ -113,14 +113,40 @@ defer result.deinit();
 | `cancel` | Cancel by OID |
 | `cancelByCloid` | Cancel by client order ID |
 | `modify` | Modify existing order |
-| `batchModify` | Modify multiple orders |
 | `scheduleCancel` | Schedule future cancellation |
 | `updateLeverage` | Set leverage |
 | `updateIsolatedMargin` | Adjust isolated margin |
-| `usdSend` | Send USDC |
+| `sendUsdc` | Send USDC to address |
 | `spotSend` | Send spot tokens |
-| `sendAsset` | Send between contexts |
+| `sendAsset` | Send between contexts/dexes |
+| `withdraw` | Bridge withdrawal |
+| `usdClassTransfer` | Move USDC between spot ↔ perp |
 | `approveAgent` | Approve API wallet |
+| `approveBuilderFee` | Approve builder fee rate |
+| `tokenDelegate` | Stake/unstake to validator |
+| `vaultTransfer` | Deposit/withdraw from vault |
+| `createSubAccount` | Create sub-account |
+| `subAccountTransfer` | Transfer USDC to/from sub-account |
+| `subAccountSpotTransfer` | Transfer spot to/from sub-account |
+| `twapOrder` | Place TWAP order |
+| `twapCancel` | Cancel TWAP order |
+| `convertToMultisig` | Convert to multi-sig account |
+| `userDexAbstraction` | Enable/disable DEX abstraction |
+| `userSetAbstraction` | Set abstraction mode |
+| `spotDeployRegisterToken` | Register new spot token |
+| `spotDeployGenesis` | Initialize token genesis |
+| `spotDeployUserGenesis` | Distribute tokens to users |
+| `spotDeployRegisterSpot` | Register spot trading pair |
+| `spotDeployRegisterHyperliquidity` | Register hyperliquidity |
+| `spotDeployFreezeUser` | Freeze/unfreeze user for token |
+| `spotDeployTokenAction` | Generic token action (enable/disable) |
+| `perpDeployRegisterAsset` | Register perp asset |
+| `perpDeploySetOracle` | Set oracle prices |
+| `cValidatorRegister` | Register validator |
+| `cValidatorChangeProfile` | Update validator profile |
+| `cValidatorUnregister` | Unregister validator |
+| `cSignerJailSelf` | Jail validator signer |
+| `cSignerUnjailSelf` | Unjail validator signer |
 
 ## Raw vs Typed
 

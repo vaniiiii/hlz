@@ -9,13 +9,13 @@ hlz gives you three things:
 ## Install the CLI
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vaniiiii/hlz/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/dzmbs/hlz/main/install.sh | sh
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/vaniiiii/hlz
+git clone https://github.com/dzmbs/hlz
 cd hlz
 zig build -Doptimize=ReleaseSmall
 # Binary at zig-out/bin/hlz
@@ -74,7 +74,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .hlz = .{
-        .url = "git+https://github.com/vaniiiii/hlz#main",
+        .url = "git+https://github.com/dzmbs/hlz#main",
     },
 },
 ```
