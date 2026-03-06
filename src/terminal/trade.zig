@@ -83,11 +83,12 @@ const s_dim = Style{ .fg = hl_muted };
 // ║  2. TYPES & STATE                                               ║
 // ╚══════════════════════════════════════════════════════════════════╝
 
-const ActiveTab = enum(u3) { positions, open_orders, trade_history, funding_history, order_history };
+const ActiveTab = enum(u3) { balances, positions, open_orders, trade_history, funding_history, order_history };
 const FocusPanel = enum(u3) { chart, book, tape, order_entry, bottom };
 const OrderSide = enum { buy, sell };
 const OrderType = enum { market, limit };
 const OrderField = enum { size, price };
+const AccountMode = enum(u2) { unknown, standard, unified, portfolio };
 const ActionId = enum(u8) { set_leverage, cancel_all, close_selected };
 const ActionMode = enum(u2) { list, confirm, number };
 const LEVERAGE_MIN: u32 = 1;
@@ -343,7 +344,7 @@ const ActionUiState = struct {
 
 /// UI-only state (never touched by worker threads)
 const UiState = struct {
-    tab: ActiveTab = .positions,
+    tab: ActiveTab = .balances,
     focus: FocusPanel = .chart,
     order: OrderState = .{},
     interval: []const u8 = "1m",
@@ -386,6 +387,7 @@ const Shared = struct {
     trade_history: TableData = .{},
     funding_history: TableData = .{},
     order_history: TableData = .{},
+    balances: TableData = .{},
     acct_buf: [24]u8 = undefined,
     acct_len: usize = 0,
     margin_buf: [24]u8 = undefined,
@@ -396,8 +398,12 @@ const Shared = struct {
     leverage_len: usize = 0,
     leverage_is_cross: bool = true,
     max_leverage: u32 = LEVERAGE_MAX,
-    // Asset resolution
+    // Account
+    account_mode: AccountMode = .unknown,
+    spot_usdc_buf: [24]u8 = undefined,
+    spot_usdc_len: usize = 0,
     asset_index: ?usize = null,
+    user_data_stale: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     // Config (UI writes, workers read)
     iv_buf: [4]u8 = .{ '1', 'm', 0, 0 },
     iv_len: u8 = 2,
@@ -482,6 +488,7 @@ const Snapshot = struct {
     trade_history: TableData,
     funding_history: TableData,
     order_history: TableData,
+    balances: TableData,
     acct_buf: [24]u8,
     acct_len: usize,
     margin_buf: [24]u8,
@@ -492,6 +499,9 @@ const Snapshot = struct {
     leverage_len: usize,
     leverage_is_cross: bool,
     max_leverage: u32,
+    account_mode: AccountMode,
+    spot_usdc_buf: [24]u8,
+    spot_usdc_len: usize,
     asset_index: ?usize,
 
     fn take(s: *Shared) Snapshot {
@@ -505,13 +515,15 @@ const Snapshot = struct {
             .trades = s.trades,
             .positions = s.positions, .open_orders = s.open_orders,
             .trade_history = s.trade_history, .funding_history = s.funding_history,
-            .order_history = s.order_history,
+            .order_history = s.order_history, .balances = s.balances,
             .acct_buf = s.acct_buf, .acct_len = s.acct_len,
             .margin_buf = s.margin_buf, .margin_len = s.margin_len,
             .avail_buf = s.avail_buf, .avail_len = s.avail_len,
             .leverage_buf = s.leverage_buf, .leverage_len = s.leverage_len,
             .leverage_is_cross = s.leverage_is_cross,
             .max_leverage = s.max_leverage,
+            .account_mode = s.account_mode,
+            .spot_usdc_buf = s.spot_usdc_buf, .spot_usdc_len = s.spot_usdc_len,
             .asset_index = s.asset_index,
         };
     }
@@ -526,11 +538,11 @@ const Snapshot = struct {
 // ╚══════════════════════════════════════════════════════════════════╝
 
 const WsWorker = struct {
-    fn run(shared: *Shared, allocator: std.mem.Allocator, chain: signing.Chain) void {
-        runInner(shared, allocator, chain) catch {};
+    fn run(shared: *Shared, allocator: std.mem.Allocator, chain: signing.Chain, user_addr: ?[]const u8) void {
+        runInner(shared, allocator, chain, user_addr) catch {};
     }
 
-    fn runInner(shared: *Shared, allocator: std.mem.Allocator, chain: signing.Chain) !void {
+    fn runInner(shared: *Shared, allocator: std.mem.Allocator, chain: signing.Chain, user_addr: ?[]const u8) !void {
         var arena_state = std.heap.ArenaAllocator.init(allocator);
         defer arena_state.deinit();
         var prev_coin_gen: u64 = 0;
@@ -581,6 +593,11 @@ const WsWorker = struct {
             conn.subscribe(.{ .trades = .{ .coin = coin } }) catch {};
             conn.subscribe(.{ .candle = .{ .coin = coin, .interval = interval } }) catch {};
             conn.subscribe(.{ .activeAssetCtx = .{ .coin = coin } }) catch {};
+            if (user_addr) |addr| {
+                conn.subscribe(.{ .orderUpdates = .{ .user = addr } }) catch {};
+                conn.subscribe(.{ .userEvents = .{ .user = addr } }) catch {};
+                conn.subscribe(.{ .userFills = .{ .user = addr } }) catch {};
+            }
 
             prev_coin_gen = coin_gen;
             prev_iv = iv_buf;
@@ -607,6 +624,7 @@ const WsWorker = struct {
                             .trades => decodeAndApplyTrades(data, shared, arena),
                             .candle => decodeAndApplyCandle(data, shared, arena),
                             .activeAssetCtx => decodeAndApplyInfo(data, shared, arena),
+                            .orderUpdates, .userEvents, .userFills => shared.user_data_stale.store(true, .release),
                             else => {},
                         }
                         _ = arena_state.reset(.retain_capacity);
@@ -721,6 +739,7 @@ const RestWorker = struct {
         var last_ms: i64 = 0;
         var prev_gen: u64 = 0;
         var resolved_coin_gen: u64 = 0;
+        var mode_resolved = false;
 
         while (shared.running.load(.acquire)) {
             var coin_buf: [16]u8 = undefined;
@@ -741,12 +760,34 @@ const RestWorker = struct {
                 Rest.resolveAssetIndex(client, coin_buf[0..coin_len], shared);
             }
 
+            // Query account mode once
+            if (!mode_resolved) {
+                if (user_addr) |addr| {
+                    var result = client.userAbstraction(addr) catch null;
+                    if (result) |*r| {
+                        defer r.deinit();
+                        const mode: AccountMode = if (std.mem.indexOf(u8, r.body, "unifiedAccount") != null)
+                            .unified
+                        else if (std.mem.indexOf(u8, r.body, "portfolioMargin") != null)
+                            .portfolio
+                        else
+                            .standard; // "disabled", "default", "dexAbstraction" all use standard rendering
+                        shared.mu.lock();
+                        defer shared.mu.unlock();
+                        shared.account_mode = mode;
+                        shared.gen += 1;
+                        mode_resolved = true;
+                    }
+                } else mode_resolved = true;
+            }
+
+            const stale = shared.user_data_stale.swap(false, .acq_rel);
             const now = std.time.milliTimestamp();
-            if (user_addr != null and now - last_ms >= 3000) {
+            if (user_addr != null and (stale or now - last_ms >= 3000)) {
                 Rest.fetchUserData(client, user_addr.?, coin_buf[0..coin_len], shared);
                 last_ms = std.time.milliTimestamp();
             }
-            std.Thread.sleep(500_000_000);
+            std.Thread.sleep(if (stale) @as(u64, 50_000_000) else @as(u64, 500_000_000));
         }
     }
 };
@@ -774,11 +815,12 @@ const Input = struct {
                         }
                     }
                 },
-                '1' => { ui.tab = .positions; ui.selected_row = 0; ui.scroll_offset = 0; },
-                '2' => { ui.tab = .open_orders; ui.selected_row = 0; ui.scroll_offset = 0; },
-                '3' => { ui.tab = .trade_history; ui.selected_row = 0; ui.scroll_offset = 0; },
-                '4' => { ui.tab = .funding_history; ui.selected_row = 0; ui.scroll_offset = 0; },
-                '5' => { ui.tab = .order_history; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '1' => { ui.tab = .balances; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '2' => { ui.tab = .positions; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '3' => { ui.tab = .open_orders; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '4' => { ui.tab = .trade_history; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '5' => { ui.tab = .funding_history; ui.selected_row = 0; ui.scroll_offset = 0; },
+                '6' => { ui.tab = .order_history; ui.selected_row = 0; ui.scroll_offset = 0; },
                 'j' => if (ui.focus == .bottom) { ui.selected_row += 1; },
                 'k' => if (ui.focus == .bottom) { ui.selected_row = ui.selected_row -| 1; },
                 'g' => if (ui.focus == .bottom) { ui.selected_row = 0; ui.scroll_offset = 0; },
@@ -1270,11 +1312,11 @@ const Render = struct {
         buf.putStr(ix, y, "Coin", s_dim);
         buf.putStr(ix + 10, y, coin, s_cyan);
         y += 1;
-        // Size
+        // Size (USD)
         const sz = o.sizeStr();
         const sf = focused and o.field == .size;
         buf.putStr(ix, y, if (sf) "\xe2\x96\xb8 " else "  ", .{ .fg = hl_accent });
-        buf.putStr(ix + 2, y, "Size", if (sf) Style{ .fg = hl_accent, .bold = true } else s_dim);
+        buf.putStr(ix + 2, y, "Size $", if (sf) Style{ .fg = hl_accent, .bold = true } else s_dim);
         if (sf) { buf.putStr(ix + 10, y, sz, s_bold); buf.putStr(ix + 10 + @as(u16, @intCast(sz.len)), y, "\xe2\x96\x88", .{ .fg = hl_accent }); }
         else buf.putStr(ix + 10, y, if (sz.len > 0) sz else "\xe2\x80\x94", s_white);
         y += 1;
@@ -1299,21 +1341,32 @@ const Render = struct {
             while (sx < iw) : (sx += 1) buf.putStr(ix + sx, y, "\xe2\x94\x80", .{ .fg = hl_border });
             y += 1;
         }
-        if (acct) |av| if (y < content_bottom) {
-            buf.putStr(ix, y, "Equity", s_dim);
-            buf.putStr(ix + 12, y, av, s_bold);
-            y += 1;
-        };
-        if (snap.avail_len > 0 and y < content_bottom) {
-            buf.putStr(ix, y, "Available", s_dim);
-            const avail_style: Style = if (std.fmt.parseFloat(f64, snap.avail_buf[0..snap.avail_len]) catch 0 > 0) s_green else Style{ .fg = hl_sell };
-            buf.putStr(ix + 12, y, snap.avail_buf[0..snap.avail_len], avail_style);
-            y += 1;
-        }
-        if (snap.margin_len > 0 and y < content_bottom) {
-            buf.putStr(ix, y, "Margin Used", s_dim);
-            buf.putStr(ix + 12, y, snap.margin_buf[0..snap.margin_len], s_white);
-            y += 1;
+        if (snap.account_mode == .unified or snap.account_mode == .portfolio) {
+            if (snap.spot_usdc_len > 0 and y < content_bottom) {
+                buf.putStr(ix, y, "Available", s_dim);
+                const usdc_str = snap.spot_usdc_buf[0..snap.spot_usdc_len];
+                const avail_style: Style = if (std.fmt.parseFloat(f64, usdc_str) catch 0 > 0) s_green else Style{ .fg = hl_sell };
+                buf.putStr(ix + 12, y, usdc_str, avail_style);
+                buf.putStr(ix + 12 + @as(u16, @intCast(@min(usdc_str.len, 20))), y, " USDC", s_dim);
+                y += 1;
+            }
+        } else {
+            if (acct) |av| if (y < content_bottom) {
+                buf.putStr(ix, y, "Equity", s_dim);
+                buf.putStr(ix + 12, y, av, s_bold);
+                y += 1;
+            };
+            if (snap.avail_len > 0 and y < content_bottom) {
+                buf.putStr(ix, y, "Available", s_dim);
+                const avail_style: Style = if (std.fmt.parseFloat(f64, snap.avail_buf[0..snap.avail_len]) catch 0 > 0) s_green else Style{ .fg = hl_sell };
+                buf.putStr(ix + 12, y, snap.avail_buf[0..snap.avail_len], avail_style);
+                y += 1;
+            }
+            if (snap.margin_len > 0 and y < content_bottom) {
+                buf.putStr(ix, y, "Margin Used", s_dim);
+                buf.putStr(ix + 12, y, snap.margin_buf[0..snap.margin_len], s_white);
+                y += 1;
+            }
         }
         const lev = if (snap.leverage_len > 0) snap.leverage_buf[0..snap.leverage_len] else null;
         if (lev) |l| if (y < content_bottom) {
@@ -1351,7 +1404,7 @@ const Render = struct {
         status: []const u8,
         status_is_error: bool,
     ) void {
-        const tabs = [_][]const u8{ " Positions ", " Open Orders ", " Trade History ", " Funding ", " Order History " };
+        const tabs = [_][]const u8{ " Balances ", " Positions ", " Open Orders ", " Trade History ", " Funding ", " Order History " };
         var tx: u16 = rect.x + 1;
         for (tabs, 0..) |lbl, i| {
             const act = @as(u3, @intCast(i)) == @intFromEnum(active);
@@ -1373,13 +1426,13 @@ const Render = struct {
         const tbl: *const TableData = switch (active) {
             .positions => &snap.positions, .open_orders => &snap.open_orders,
             .trade_history => &snap.trade_history, .funding_history => &snap.funding_history,
-            .order_history => &snap.order_history,
+            .order_history => &snap.order_history, .balances => &snap.balances,
         };
         if (tbl.n_rows == 0) {
             buf.putStr(cr.x + 2, cr.y, switch (active) {
                 .positions => "No open positions", .open_orders => "No open orders",
                 .trade_history => "No trade history", .funding_history => "No funding history",
-                .order_history => "No order history",
+                .order_history => "No order history", .balances => "No balances",
             }, s_dim);
         } else table(buf, tbl, cr, if (focused) selected else null, if (focused) scroll else null);
         const hint: []const u8 = switch (active) {
@@ -1627,36 +1680,28 @@ const Orders = struct {
         };
         const sz_str = order.sizeStr();
         if (sz_str.len == 0) { order.setStatus("Enter size first", true); return; }
-        const sz = std.fmt.parseFloat(f64, sz_str) catch { order.setStatus("Invalid size", true); return; };
-        if (sz <= 0) { order.setStatus("Size must be > 0", true); return; }
+        const usd_dec = Decimal.fromString(sz_str) catch { order.setStatus("Invalid size", true); return; };
+        if (usd_dec.isZero() or usd_dec.mantissa < 0) { order.setStatus("Size must be > 0", true); return; }
 
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const tif: types.TimeInForce = if (order.order_type == .market) .FrontendMarket else .Gtc;
-        const sz_raw = Decimal.fromString(sz_str) catch { order.setStatus("Invalid size format", true); return; };
-        const sz_dec = if (resolved.sz_decimals >= 0) blk: {
-            const sd: u8 = @intCast(resolved.sz_decimals);
-            const truncated = sz_raw.truncDp(sd);
-            if (truncated.isZero()) {
-                var sb: [48]u8 = undefined;
-                const msg = std.fmt.bufPrint(&sb, "Size too small for {d} decimals", .{sd}) catch "Size too small";
-                order.setStatus(msg, true);
-                return;
-            }
-            break :blk truncated;
-        } else sz_raw;
 
-        const px_raw = if (order.order_type == .market) blk: {
+        // Determine execution price and conversion price
+        // Market: BBO with slippage for execution, raw BBO for USD→size conversion
+        // Limit: user's limit price for both
+        const conv_px: Decimal, const px_raw: Decimal = if (order.order_type == .market) blk: {
             const bbo_str = if (order.side == .buy and snap.n_asks > 0)
                 snap.asks[0].px()
             else if (order.side == .sell and snap.n_bids > 0)
                 snap.bids[0].px()
-            else { order.setStatus("No book data for market price", true); return; };
+            else { order.setStatus("No book data", true); return; };
             const bbo_px = Decimal.fromString(bbo_str) catch { order.setStatus("Invalid book price", true); return; };
-            break :blk bbo_px.mul(if (order.side == .buy) SLIPPAGE_BUY else SLIPPAGE_SELL);
+            break :blk .{ bbo_px, bbo_px.mul(if (order.side == .buy) SLIPPAGE_BUY else SLIPPAGE_SELL) };
         } else blk: {
             const p = order.priceStr();
             if (p.len == 0) { order.setStatus("Enter price first", true); return; }
-            break :blk Decimal.fromString(p) catch { order.setStatus("Invalid price format", true); return; };
+            const limit_px = Decimal.fromString(p) catch { order.setStatus("Invalid price format", true); return; };
+            break :blk .{ limit_px, limit_px };
         };
         const px_dec = if (resolved.sz_decimals >= 0) blk: {
             const pt = if (isSpotAsset(resolved.index))
@@ -1666,18 +1711,20 @@ const Orders = struct {
             break :blk pt.round(px_raw) orelse px_raw;
         } else px_raw;
 
-        const notional = decToF64(sz_dec) * decToF64(px_dec);
-        if (notional > 0 and notional < 10.0) {
-            var lot_mult: f64 = 1.0;
-            const sd: u8 = if (resolved.sz_decimals >= 0) @intCast(resolved.sz_decimals) else 4;
-            for (0..sd) |_| lot_mult *= 10.0;
-            const min_sz = @ceil(10.0 / decToF64(px_dec) * lot_mult) / lot_mult;
-            var min_buf: [32]u8 = undefined;
-            var status_buf: [48]u8 = undefined;
-            const msg = std.fmt.bufPrint(&status_buf, "Need at least {s} {s}", .{
-                smartFmt(&min_buf, min_sz), coin,
-            }) catch "Order below $10 minimum";
-            order.setStatus(msg, true);
+        // Convert USD to asset size using the conversion price
+        const sz_raw = usd_dec.div(conv_px);
+        const sz_dec = if (resolved.sz_decimals >= 0) blk: {
+            const sd: u8 = @intCast(resolved.sz_decimals);
+            const truncated = sz_raw.truncDp(sd);
+            if (truncated.isZero()) {
+                order.setStatus("Size too small for this asset", true);
+                return;
+            }
+            break :blk truncated;
+        } else sz_raw;
+
+        if (decToF64(usd_dec) < 10.0) {
+            order.setStatus("Min order size is $10", true);
             return;
         }
 
@@ -1955,7 +2002,8 @@ const Rest = struct {
                 pos.set(r, 0, p.coin);
                 if (sz_f > 0) { pos.set(r, 1, "LONG"); pos.row_colors[r] = .positive; } else { pos.set(r, 1, "SHORT"); pos.row_colors[r] = .negative; }
                 var sb: [20]u8 = undefined;
-                pos.set(r, 2, std.fmt.bufPrint(&sb, "{d:.4}", .{@abs(sz_f)}) catch "?");
+                const abs_szi = Decimal{ .mantissa = @intCast(@abs(p.szi.mantissa)), .scale = p.szi.scale };
+                pos.set(r, 2, abs_szi.normalize().toString(&sb) catch "?");
                 if (p.entryPx) |ep| { var eb: [20]u8 = undefined; pos.set(r, 3, ep.normalize().toString(&eb) catch "?"); }
                 if (p.leverage) |lev| {
                     var lb: [16]u8 = undefined;
@@ -2093,6 +2141,37 @@ const Rest = struct {
                 ord_hist.n_rows += 1;
             }
         }
+
+        // 6. Spot Balances (typed)
+        var bals = TableData{};
+        var spot_usdc: [24]u8 = undefined;
+        var spot_usdc_len: usize = 0;
+        blk_bals: {
+            var typed = client.getSpotBalances(addr) catch break :blk_bals;
+            defer typed.deinit();
+            bals.n_cols = 3;
+            bals.setHeader(0, "Token"); bals.setHeader(1, "Balance"); bals.setHeader(2, "Available");
+            for (typed.value.balances) |b| {
+                if (bals.n_rows >= MAX_ROWS) break;
+                const total_f = decToF64(b.total);
+                if (total_f == 0) continue;
+                const r = bals.n_rows;
+                bals.set(r, 0, b.coin);
+                var tb_buf: [20]u8 = undefined;
+                bals.set(r, 1, b.total.normalize().toString(&tb_buf) catch "?");
+                const hold_f = decToF64(b.hold);
+                const avail_f = total_f - hold_f;
+                var ab_buf: [20]u8 = undefined;
+                bals.set(r, 2, std.fmt.bufPrint(&ab_buf, "{d:.6}", .{avail_f}) catch "?");
+                if (std.ascii.eqlIgnoreCase(b.coin, "USDC")) {
+                    var usdc_buf: [24]u8 = undefined;
+                    spot_usdc_len = (std.fmt.bufPrint(&usdc_buf, "{d:.6}", .{avail_f}) catch "0").len;
+                    @memcpy(spot_usdc[0..spot_usdc_len], usdc_buf[0..spot_usdc_len]);
+                }
+                bals.n_rows += 1;
+            }
+        }
+
         shared.mu.lock();
         defer shared.mu.unlock();
         shared.positions = pos;
@@ -2100,6 +2179,9 @@ const Rest = struct {
         shared.trade_history = trades;
         shared.funding_history = funding;
         shared.order_history = ord_hist;
+        shared.balances = bals;
+        shared.spot_usdc_buf = spot_usdc;
+        shared.spot_usdc_len = spot_usdc_len;
         shared.acct_buf = ab;
         shared.acct_len = al;
         shared.margin_buf = mb;
@@ -2282,8 +2364,9 @@ pub fn run(allocator: std.mem.Allocator, config_in: Config, coin: []const u8) !v
     shared.setInterval(ui.interval);
     { shared.mu.lock(); defer shared.mu.unlock(); shared.setCoin(ui.coin[0..ui.coin_len]); }
 
-    const ws_w = std.Thread.spawn(.{}, WsWorker.run, .{ &shared, allocator, config.chain }) catch return;
-    const rest_w = std.Thread.spawn(.{}, RestWorker.run, .{ &shared, &worker_client, config.getAddress() }) catch return;
+    const user_addr = config.getAddress();
+    const ws_w = std.Thread.spawn(.{}, WsWorker.run, .{ &shared, allocator, config.chain, user_addr }) catch return;
+    const rest_w = std.Thread.spawn(.{}, RestWorker.run, .{ &shared, &worker_client, user_addr }) catch return;
     defer {
         shared.running.store(false, .release);
         const fd = shared.ws_fd.load(.acquire);
@@ -2323,7 +2406,7 @@ pub fn run(allocator: std.mem.Allocator, config_in: Config, coin: []const u8) !v
             const tbl: *const TableData = switch (ui.tab) {
                 .positions => &s.positions, .open_orders => &s.open_orders,
                 .trade_history => &s.trade_history, .funding_history => &s.funding_history,
-                .order_history => &s.order_history,
+                .order_history => &s.order_history, .balances => &s.balances,
             };
             if (tbl.n_rows > 0) {
                 ui.selected_row = @min(ui.selected_row, tbl.n_rows - 1);
