@@ -167,7 +167,8 @@ pub const ConvertToMultiSigParams = struct {
 
 /// Pack an OrderRequest to msgpack with single-letter field names.
 pub fn packOrderRequest(p: *msgpack.Packer, order: OrderRequest) msgpack.PackError!void {
-    try p.packMapHeader(7); // 7 fields: a, b, p, s, r, t, c
+    const is_zero_cloid = std.mem.eql(u8, &order.cloid, &ZERO_CLOID);
+    try p.packMapHeader(if (is_zero_cloid) 6 else 7); // omit "c" when cloid is zero
 
     // a: asset
     try p.packStr("a");
@@ -218,10 +219,12 @@ pub fn packOrderRequest(p: *msgpack.Packer, order: OrderRequest) msgpack.PackErr
         },
     }
 
-    // c: cloid (hex string)
-    try p.packStr("c");
-    const cloid_hex = cloidToHex(order.cloid);
-    try p.packStr(&cloid_hex);
+    // c: cloid (hex string) — omit when zero to match server hashing
+    if (!is_zero_cloid) {
+        try p.packStr("c");
+        const cloid_hex = cloidToHex(order.cloid);
+        try p.packStr(&cloid_hex);
+    }
 }
 
 /// Pack a BatchOrder to msgpack.
@@ -1040,12 +1043,13 @@ test "cloidToHex: zero cloid" {
 }
 
 test "packActionOrder: matches Rust Action::Order msgpack vector" {
-    // From rust_vectors.json: action_order_msgpack_hex (112 bytes)
+    // From rust_vectors.json: action_order_msgpack_hex (74 bytes)
     // This is the Action with serde tag, which is what actually gets hashed for signing
-    const expected_hex = "83a474797065a56f72646572a66f72646572739187a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a163d92230783030303030303030303030303030303030303030303030303030303030303030a867726f7570696e67a26e61";
+    // Zero cloid is omitted from serialization to match server hashing
+    const expected_hex = "83a474797065a56f72646572a66f72646572739186a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a867726f7570696e67a26e61";
 
-    var expected: [112]u8 = undefined;
-    for (0..112) |i| {
+    var expected: [74]u8 = undefined;
+    for (0..74) |i| {
         expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 ..][0..2], 16) catch unreachable;
     }
 
@@ -1072,11 +1076,11 @@ test "packActionOrder: matches Rust Action::Order msgpack vector" {
 }
 
 test "packBatchOrder: matches Rust msgpack vector" {
-    // From rust_vectors.json: order_msgpack_hex
-    const expected_hex = "82a66f72646572739187a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a163d92230783030303030303030303030303030303030303030303030303030303030303030a867726f7570696e67a26e61";
+    // From rust_vectors.json: order_msgpack_hex (zero cloid omitted)
+    const expected_hex = "82a66f72646572739186a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a867726f7570696e67a26e61";
 
-    var expected: [101]u8 = undefined;
-    for (0..101) |i| {
+    var expected: [63]u8 = undefined;
+    for (0..63) |i| {
         expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 ..][0..2], 16) catch unreachable;
     }
 

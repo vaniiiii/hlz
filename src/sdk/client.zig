@@ -1937,8 +1937,6 @@ fn writeOrderJson(writer: anytype, order: types.OrderRequest) !void {
     const px_str = order.limit_px.normalize().toString(&px_buf) catch return error.BufferOverflow;
     var sz_buf: [64]u8 = undefined;
     const sz_str = order.sz.normalize().toString(&sz_buf) catch return error.BufferOverflow;
-    const cloid_hex = types.cloidToHex(order.cloid);
-
     try std.fmt.format(writer, "{{\"a\":{d},\"b\":{},\"p\":\"{s}\",\"s\":\"{s}\",\"r\":{}", .{
         order.asset,
         order.is_buy,
@@ -1963,7 +1961,13 @@ fn writeOrderJson(writer: anytype, order: types.OrderRequest) !void {
         },
     }
 
-    try std.fmt.format(writer, ",\"c\":\"{s}\"}}", .{@as([]const u8, &cloid_hex)});
+    // c: cloid — omit when zero to match server hashing
+    if (!std.mem.eql(u8, &order.cloid, &types.ZERO_CLOID)) {
+        const cloid_hex = types.cloidToHex(order.cloid);
+        try std.fmt.format(writer, ",\"c\":\"{s}\"}}", .{@as([]const u8, &cloid_hex)});
+    } else {
+        try writer.writeAll("}");
+    }
 }
 
 fn hexByte(buf: *[2]u8, byte: u8) void {

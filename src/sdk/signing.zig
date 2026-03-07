@@ -537,7 +537,7 @@ const Decimal = @import("../lib/math/decimal.zig").Decimal;
 
 test "rmpHashOrder: matches Rust Action::Order rmp_hash" {
     // From rust_vectors.json: action_order_rmp_hash (hash of Action with serde tag)
-    const expected_hex = "c8aeff333a7682384e60ccfdd826057b957ce0ebb6d99d291faa854e2882688d";
+    const expected_hex = "4672e469ee19cfaf5914abfba4415d4d31eb1823ff61e88ffb7f1ce050bdb7fa";
     var expected: Hash = undefined;
     for (0..32) |i| {
         expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 ..][0..2], 16) catch unreachable;
@@ -592,7 +592,7 @@ test "signOrder: produces recoverable signature" {
 
 test "signOrder: matches Rust SDK signature" {
     // From rust_vectors.json: order_signature
-    const expected_hex = "a90ae662eb1fc9ff3f00b92c8917a768839e0d78606d2dbf08ed031848abf6f971bdbea901a0d3e1532c096835fbc1d85a18a81291e3de954195a52ab3ea2ff01c";
+    const expected_hex = "c74b8cbd4796e0f673c1133a892ba45707cf44b2389064e61b4ad7ffb55c17c95e3585f523c4684c30322f516be65b668c67426fcd84b8aefa0244ca4345b4e61b";
     var expected: [65]u8 = undefined;
     for (0..65) |i| {
         expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 ..][0..2], 16) catch unreachable;

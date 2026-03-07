@@ -298,6 +298,7 @@ pub const PerpMeta = struct {
     maxLeverage: u32 = 1,
     onlyIsolated: bool = false,
     isDelisted: bool = false,
+    isAlignedQuoteToken: bool = false,
 };
 
 pub const PerpUniverse = struct {
@@ -382,6 +383,7 @@ pub const DexInfo = struct {
     name: []const u8 = "",
     fullName: ?[]const u8 = null,
     deployer: ?[]const u8 = null,
+    deployerFeeScale: ?[]const u8 = null,
     assetToStreamingOiCap: ?[]const std.json.Value = null,
 };
 
