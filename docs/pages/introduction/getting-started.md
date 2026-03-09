@@ -33,8 +33,9 @@ export HL_KEY="your_private_key_hex"
 hlz keys new default
 # Enter password when prompted
 
-# Option 3: Config file (~/.hlz.json)
-echo '{"key_name":"default","address":"0x..."}' > ~/.hlz.json
+# Option 3: Config file
+echo 'HL_KEY=your_private_key_hex' > .env
+# Or system-wide: ~/.hl/config (same key=value format)
 ```
 
 ## Your First Commands

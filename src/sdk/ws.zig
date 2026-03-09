@@ -19,7 +19,7 @@ pub const Subscription = union(enum) {
     userTwapHistory: struct { user: []const u8 },
     activeAssetCtx: struct { coin: []const u8 },
     activeAssetData: struct { user: []const u8, coin: []const u8 },
-    webData2: struct { user: []const u8 },
+    webData2: struct { user: []const u8, dex: ?[]const u8 = null },
 
     fn formatMsg(self: Subscription, buf: []u8, method: []const u8) ![]const u8 {
         return switch (self) {
@@ -64,9 +64,14 @@ pub const Subscription = union(enum) {
             .activeAssetData => |s| std.fmt.bufPrint(buf,
                 \\{{"method":"{s}","subscription":{{"type":"activeAssetData","user":"{s}","coin":"{s}"}}}}
             , .{ method, s.user, s.coin }),
-            .webData2 => |s| std.fmt.bufPrint(buf,
-                \\{{"method":"{s}","subscription":{{"type":"webData2","user":"{s}"}}}}
-            , .{ method, s.user }),
+            .webData2 => |s| if (s.dex) |d|
+                std.fmt.bufPrint(buf,
+                    \\{{"method":"{s}","subscription":{{"type":"webData2","user":"{s}","dex":"{s}"}}}}
+                , .{ method, s.user, d })
+            else
+                std.fmt.bufPrint(buf,
+                    \\{{"method":"{s}","subscription":{{"type":"webData2","user":"{s}"}}}}
+                , .{ method, s.user }),
         };
     }
 

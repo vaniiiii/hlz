@@ -87,14 +87,25 @@ export HL_PASSWORD="keystore_pass"    # Keystore password
 
 ## Error Handling
 
-Errors are written to stderr. JSON errors include a structured envelope:
+In `--json` mode, errors are written to **stdout** as a structured JSON envelope — same stream as success output. Parse the `status` field to distinguish:
 
 ```bash
-hlz buy INVALID 0.1 2>/dev/null
-echo $?  # 2 (usage error)
+hlz buy BTC 0.1 @50000 --json
+# stdout: {"v":1,"status":"error","cmd":"buy","error":"MissingKey","message":"","retryable":false,"hint":"set HL_KEY env var or pass --key","timing_ms":0}
 
-hlz buy BTC 0.1 @50000 --json 2>&1
-# stderr: {"error":"missing key","code":3}
+# Check status in your agent:
+RESULT=$(hlz buy BTC 0.1 @50000 --json)
+STATUS=$(echo "$RESULT" | jq -r '.status')
+if [ "$STATUS" = "error" ]; then
+  echo "$RESULT" | jq -r '.hint'
+fi
+```
+
+Exit codes work in all modes:
+
+```bash
+hlz buy INVALID 0.1
+echo $?  # 2 (usage error)
 ```
 
 ## Rate Limits
