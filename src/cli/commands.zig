@@ -2780,22 +2780,8 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         stderr.writeAll(msg) catch {};
     }
 
-    var conn = WsConnection.connect(std.heap.page_allocator, config.chain) catch |e| {
-        return failFmt(w, "WebSocket connection failed: {s}", .{@errorName(e)});
-    };
-    defer conn.close();
-
-    conn.subscribe(.{ .allMids = .{ .dex = null } }) catch {
-        return fail(w, "Failed to subscribe to allMids");
-    };
-
-    if (!is_json) {
-        stderr.writeAll("Connected \xe2\x9c\x93  (Ctrl+C to quit)\r\n") catch {};
-    }
-
     // SIGINT handling — reuse the stream pattern
     stream_shutdown.store(false, .release);
-    stream_socket_fd.store(conn.socket_fd, .release);
     const S = struct {
         fn handler(_: c_int) callconv(.c) void {
             stream_shutdown.store(true, .release);
@@ -2813,9 +2799,82 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
     posix.sigaction(posix.SIG.INT, &act, null);
     posix.sigaction(posix.SIG.TERM, &act, null);
 
+    // Reconnect loop — reconnects on disconnect/error unless SIGINT
+    const max_retries: u8 = 10;
+    var retries: u8 = 0;
+    while (!stream_shutdown.load(.acquire)) {
+        var conn = WsConnection.connect(std.heap.page_allocator, config.chain) catch |e| {
+            if (stream_shutdown.load(.acquire)) break;
+            retries += 1;
+            if (retries > max_retries) {
+                return failFmt(w, "WebSocket connection failed after {d} retries: {s}", .{ max_retries, @errorName(e) });
+            }
+            if (!is_json) {
+                var err_buf: [256]u8 = undefined;
+                const err_msg = std.fmt.bufPrint(&err_buf, "Connection failed ({s}), retrying ({d}/{d})...\r\n", .{ @errorName(e), retries, max_retries }) catch "Connection failed, retrying...\r\n";
+                stderr.writeAll(err_msg) catch {};
+            }
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
+        };
+
+        // Update socket fd for signal handler
+        stream_socket_fd.store(conn.socket_fd, .release);
+
+        conn.subscribe(.{ .allMids = .{ .dex = null } }) catch {
+            conn.close();
+            retries += 1;
+            if (retries > max_retries) {
+                return fail(w, "Failed to subscribe after retries");
+            }
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
+        };
+
+        if (!is_json) {
+            if (retries > 0) {
+                stderr.writeAll("Reconnected \xe2\x9c\x93\r\n") catch {};
+            } else {
+                stderr.writeAll("Connected \xe2\x9c\x93  (Ctrl+C to quit)\r\n") catch {};
+            }
+        }
+        retries = 0; // reset on successful connection
+
+        const should_exit = watchReadLoop(allocator, conn, a, is_json, is_above, threshold, threshold_str, coin, stdout, stderr);
+        conn.close();
+
+        if (should_exit) return;
+
+        // If we get here, connection was lost — reconnect unless shutting down
+        if (stream_shutdown.load(.acquire)) break;
+        if (!is_json) {
+            stderr.writeAll("Disconnected, reconnecting...\r\n") catch {};
+        }
+        std.Thread.sleep(1 * std.time.ns_per_s);
+    }
+
+    if (!is_json) {
+        stderr.writeAll("\r\n") catch {};
+    }
+}
+
+/// Inner read loop for watch. Returns true if the caller should exit (trigger without repeat, or SIGINT).
+fn watchReadLoop(
+    allocator: std.mem.Allocator,
+    conn: *WsConnection,
+    a: args_mod.WatchArgs,
+    is_json: bool,
+    is_above: bool,
+    threshold: f64,
+    threshold_str: []const u8,
+    coin: []const u8,
+    stdout: std.fs.File,
+    stderr: std.fs.File,
+) bool {
     while (!stream_shutdown.load(.acquire)) {
         const event = conn.next() catch |e| {
-            if (!is_json) {
+            // Connection error — return to reconnect loop
+            if (!is_json and !stream_shutdown.load(.acquire)) {
                 if (e == error.EndOfStream) {
                     stderr.writeAll("Connection closed by server\r\n") catch {};
                 } else {
@@ -2824,17 +2883,12 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
                     stderr.writeAll(err_msg) catch {};
                 }
             }
-            return;
+            return false; // reconnect
         };
 
         switch (event) {
             .timeout => continue,
-            .closed => {
-                if (!is_json) {
-                    stderr.writeAll("Connection closed\r\n") catch {};
-                }
-                return;
-            },
+            .closed => return false, // reconnect
             .message => |msg| {
                 if (msg.channel != .allMids) continue;
 
@@ -2860,8 +2914,8 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
                         threshold_str,
                         now,
                     }) catch continue;
-                    stdout.writeAll(json_out) catch return;
-                    stdout.writeAll("\n") catch return;
+                    stdout.writeAll(json_out) catch return true;
+                    stdout.writeAll("\n") catch return true;
                 } else {
                     var alert_buf: [256]u8 = undefined;
                     const alert = std.fmt.bufPrint(&alert_buf, "\xe2\x9a\xa1 {s} hit {s} (was watching: {s} {s})\r\n", .{
@@ -2888,20 +2942,17 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
                             const err_msg = std.fmt.bufPrint(&err_buf, "Failed to execute command: {s}\r\n", .{@errorName(e)}) catch "Failed to execute command\r\n";
                             stderr.writeAll(err_msg) catch {};
                         }
-                        if (!a.repeat) return;
+                        if (!a.repeat) return true;
                         continue;
                     };
                     _ = child.wait() catch {};
                 }
 
-                if (!a.repeat) return;
+                if (!a.repeat) return true; // exit after first trigger
             },
         }
     }
-
-    if (!is_json) {
-        stderr.writeAll("\r\n") catch {};
-    }
+    return true; // SIGINT
 }
 
 /// Extract a coin's mid price from an allMids WS message.

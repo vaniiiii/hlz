@@ -1007,8 +1007,9 @@ fn parseWatch(args: []const []const u8) ?WatchArgs {
             result.repeat = true;
         }
     }
-    // Must have at least one condition
+    // Must have exactly one condition — not both, not neither
     if (result.above == null and result.below == null) return null;
+    if (result.above != null and result.below != null) return null;
     return result;
 }
 
