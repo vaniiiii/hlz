@@ -1730,7 +1730,7 @@ const Orders = struct {
 
         const ord = types.OrderRequest{ .asset = resolved.index, .is_buy = order.side == .buy, .limit_px = px_dec, .sz = sz_dec, .reduce_only = false, .order_type = .{ .limit = .{ .tif = tif } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
-        var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
+        var result = client.place(signer, .{ .orders = &arr, .grouping = .na, .builder = types.HLZ_BUILDER }, nonce, null, null) catch {
             order.setStatus("Order failed (network)", true);
             return;
         };
@@ -1863,7 +1863,7 @@ const Orders = struct {
         const nonce = @as(u64, @intCast(std.time.milliTimestamp()));
         const ord = types.OrderRequest{ .asset = resolved.index, .is_buy = !is_long, .limit_px = px_dec, .sz = sz_dec, .reduce_only = true, .order_type = .{ .limit = .{ .tif = .FrontendMarket } }, .cloid = makeCloid(nonce) };
         const arr = [1]types.OrderRequest{ord};
-        var result = client.place(signer, .{ .orders = &arr, .grouping = .na }, nonce, null, null) catch {
+        var result = client.place(signer, .{ .orders = &arr, .grouping = .na, .builder = types.HLZ_BUILDER }, nonce, null, null) catch {
             ui.order.setStatus("Close failed (network)", true);
             return;
         };

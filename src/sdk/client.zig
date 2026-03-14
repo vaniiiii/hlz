@@ -1829,7 +1829,14 @@ fn writeActionJson(writer: anytype, action_data: anytype) !void {
             if (i > 0) try writer.writeAll(",");
             try writeOrderJson(writer, order);
         }
-        try std.fmt.format(writer, "],\"grouping\":\"{s}\"}}", .{@tagName(action_data.grouping)});
+        try std.fmt.format(writer, "],\"grouping\":\"{s}\"", .{@tagName(action_data.grouping)});
+        if (action_data.builder) |builder| {
+            try writer.writeAll(",\"builder\":{\"b\":\"");
+            const addr_hex = types.addressToHex(builder.address);
+            try writer.writeAll(&addr_hex);
+            try std.fmt.format(writer, "\",\"f\":{d}}}", .{builder.fee});
+        }
+        try writer.writeAll("}");
     } else if (T == types.BatchCancel) {
         try writer.writeAll("{\"type\":\"cancel\",\"cancels\":[");
         for (action_data.cancels, 0..) |c, i| {
@@ -2084,4 +2091,61 @@ test "writeOrderJson" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"p\":\"50000\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"s\":\"0.1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"tif\":\"Gtc\"") != null);
+}
+
+test "writeActionJson: BatchOrder with builder" {
+    const order = types.OrderRequest{
+        .asset = 0,
+        .is_buy = true,
+        .limit_px = Decimal.fromString("50000") catch unreachable,
+        .sz = Decimal.fromString("0.1") catch unreachable,
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = types.ZERO_CLOID,
+    };
+
+    const batch = types.BatchOrder{
+        .orders = &[_]types.OrderRequest{order},
+        .grouping = .na,
+        .builder = types.HLZ_BUILDER,
+    };
+
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try writeActionJson(fbs.writer(), batch);
+    const json = fbs.getWritten();
+
+    // Verify action structure
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"order\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"grouping\":\"na\"") != null);
+    // Verify builder field
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"builder\":{\"b\":\"0x0000000000000000000000000000000000000000\",\"f\":5}") != null);
+}
+
+test "writeActionJson: BatchOrder without builder" {
+    const order = types.OrderRequest{
+        .asset = 0,
+        .is_buy = true,
+        .limit_px = Decimal.fromString("50000") catch unreachable,
+        .sz = Decimal.fromString("0.1") catch unreachable,
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = types.ZERO_CLOID,
+    };
+
+    const batch = types.BatchOrder{
+        .orders = &[_]types.OrderRequest{order},
+        .grouping = .na,
+    };
+
+    var buf: [1024]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&buf);
+    try writeActionJson(fbs.writer(), batch);
+    const json = fbs.getWritten();
+
+    // Verify action structure
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"type\":\"order\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"grouping\":\"na\"") != null);
+    // Verify no builder field
+    try std.testing.expect(std.mem.indexOf(u8, json, "builder") == null);
 }

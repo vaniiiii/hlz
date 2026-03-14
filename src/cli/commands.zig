@@ -136,6 +136,27 @@ fn getWriteAuth(w: *Writer, config: Config) CmdError!WriteAuth {
     return auth;
 }
 
+/// Check if the user has approved the hlz builder fee. If not, print a one-time hint.
+/// Best-effort: network failures are silently ignored (non-blocking).
+fn checkBuilderApproval(client: *Client, w: *Writer, user_address: []const u8) void {
+    const builder_hex = types.addressToHex(types.HLZ_BUILDER_ADDRESS);
+    var result = client.maxBuilderFee(user_address, &builder_hex) catch return;
+    defer result.deinit();
+    // Parse the response — maxBuilderFee returns a number (max approved fee rate).
+    // If 0 or missing, user hasn't approved.
+    const body = result.body;
+    // The response is just a plain number string like "0" or "10"
+    const trimmed = std.mem.trim(u8, body, " \t\r\n\"");
+    const approved_fee = std.fmt.parseInt(u64, trimmed, 10) catch 0;
+    if (approved_fee < types.HLZ_BUILDER_FEE) {
+        w.styled(Style.muted, "hint: ") catch return;
+        w.print("hlz charges a {d}.{d}bp builder fee on orders. Approve with:\n", .{
+            types.HLZ_BUILDER_FEE / 10, types.HLZ_BUILDER_FEE % 10,
+        }) catch return;
+        w.print("  hlz approve-builder {s} 0.01%\n\n", .{@as([]const u8, &builder_hex)}) catch return;
+    }
+}
+
 pub fn keys(allocator: std.mem.Allocator, w: *Writer, a: args_mod.KeysArgs) !void {
     const password = a.password orelse std.posix.getenv("HL_PASSWORD") orelse {
         // For ls, no password needed
@@ -1206,6 +1227,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     defer client.deinit();
 
     const auth = try getWriteAuth(w, config);
+    if (w.format != .json) checkBuilderApproval(&client, w, auth.address());
 
     const resolved = try resolveAsset(&client, a.coin);
     const asset = resolved.index;
@@ -1370,18 +1392,20 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     const batch = types.BatchOrder{
         .orders = bracket_orders[0..bracket_count],
         .grouping = grouping,
+        .builder = types.HLZ_BUILDER,
     };
 
     // --dry-run: preview without sending
     if (a.dry_run) {
+        const builder_addr_hex = types.addressToHex(types.HLZ_BUILDER_ADDRESS);
         if (w.format == .json) {
-            var db: [512]u8 = undefined;
+            var db: [1024]u8 = undefined;
             var lp_buf: [32]u8 = undefined;
             var sz_dbuf: [32]u8 = undefined;
             const lp_s = limit_px.normalize().toString(&lp_buf) catch "?";
             const sz_s = sz.normalize().toString(&sz_dbuf) catch "?";
             const dr = std.fmt.bufPrint(&db,
-                \\{{"status":"dry_run","side":"{s}","coin":"{s}","size":"{s}","price":"{s}","reduce_only":{s},"bracket":{d}}}
+                \\{{"status":"dry_run","side":"{s}","coin":"{s}","size":"{s}","price":"{s}","reduce_only":{s},"bracket":{d},"builder":{{"b":"{s}","f":{d}}}}}
             , .{
                 if (is_buy) "buy" else "sell",
                 a.coin,
@@ -1389,6 +1413,8 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
                 lp_s,
                 if (a.reduce_only) "true" else "false",
                 bracket_count - 1,
+                @as([]const u8, &builder_addr_hex),
+                types.HLZ_BUILDER_FEE,
             }) catch "{}";
             try w.jsonRaw(dr);
         } else {
@@ -1399,6 +1425,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
             try w.print(" {s} @ {s}", .{ sz.normalize().toString(&sz_dbuf) catch "?", limit_px.normalize().toString(&lp_buf) catch "?" });
             if (a.reduce_only) try w.print(" reduce-only", .{});
             if (bracket_count > 1) try w.print(" +{d} bracket", .{bracket_count - 1});
+            try w.print(" builder={s} fee={d}.{d}bp", .{ @as([]const u8, &builder_addr_hex), types.HLZ_BUILDER_FEE / 10, types.HLZ_BUILDER_FEE % 10 });
             try w.nl();
         }
         return;
@@ -3566,6 +3593,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
     defer client.deinit();
 
     const auth = try getWriteAuth(w, config);
+    if (w.format != .json) checkBuilderApproval(&client, w, auth.address());
     const resolved = try resolveAsset(&client, a.coin);
     const asset = resolved.index;
     const total_sz = std.fmt.parseFloat(f64, a.size) catch return error.Overflow;
@@ -3642,6 +3670,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         const batch_order = types.BatchOrder{
             .orders = &[_]types.OrderRequest{order},
             .grouping = .na,
+            .builder = types.HLZ_BUILDER,
         };
 
         var nonce_handler = response.NonceHandler.init();
@@ -3803,6 +3832,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
     var client = makeClient(allocator, config);
     defer client.deinit();
     const auth = try getWriteAuth(w, config);
+    if (w.format != .json) checkBuilderApproval(&client, w, auth.address());
 
     // Parse each order string into OrderRequest
     var batch_items: [16]types.OrderRequest = undefined;
@@ -3901,6 +3931,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
     const batch_order = types.BatchOrder{
         .orders = batch_items[0..order_count],
         .grouping = .na,
+        .builder = types.HLZ_BUILDER,
     };
 
     var nonce_handler = response.NonceHandler.init();
