@@ -2754,6 +2754,168 @@ pub fn stream(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_
     }
 }
 
+pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.WatchArgs) CmdError!void {
+    const is_json = w.format == .json or !w.is_tty;
+    const stderr = std.fs.File.stderr();
+    const stdout = std.fs.File.stdout();
+
+    // Parse threshold
+    const threshold = std.fmt.parseFloat(f64, a.above orelse a.below orelse
+        return fail(w, "either --above or --below is required")) catch
+        return failFmt(w, "invalid threshold: {s}", .{a.above orelse a.below orelse ""});
+    const is_above = a.above != null;
+    const threshold_str = a.above orelse a.below orelse "";
+
+    // Uppercase the coin for matching against allMids keys
+    var coin_buf: [16]u8 = undefined;
+    const coin = upperCoin(a.coin, &coin_buf);
+
+    if (!is_json) {
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Watching {s} {s} {s}...\r\n", .{
+            coin,
+            if (is_above) @as([]const u8, "--above") else @as([]const u8, "--below"),
+            threshold_str,
+        }) catch "Watching...\r\n";
+        stderr.writeAll(msg) catch {};
+    }
+
+    var conn = WsConnection.connect(std.heap.page_allocator, config.chain) catch |e| {
+        return failFmt(w, "WebSocket connection failed: {s}", .{@errorName(e)});
+    };
+    defer conn.close();
+
+    conn.subscribe(.{ .allMids = .{ .dex = null } }) catch {
+        return fail(w, "Failed to subscribe to allMids");
+    };
+
+    if (!is_json) {
+        stderr.writeAll("Connected \xe2\x9c\x93  (Ctrl+C to quit)\r\n") catch {};
+    }
+
+    // SIGINT handling — reuse the stream pattern
+    stream_shutdown.store(false, .release);
+    stream_socket_fd.store(conn.socket_fd, .release);
+    const S = struct {
+        fn handler(_: c_int) callconv(.c) void {
+            stream_shutdown.store(true, .release);
+            const fd = stream_socket_fd.load(.acquire);
+            if (fd != -1) {
+                _ = std.c.shutdown(fd, 2); // SHUT_RDWR = 2
+            }
+        }
+    };
+    const act = posix.Sigaction{
+        .handler = .{ .handler = S.handler },
+        .mask = std.mem.zeroes(posix.sigset_t),
+        .flags = 0,
+    };
+    posix.sigaction(posix.SIG.INT, &act, null);
+    posix.sigaction(posix.SIG.TERM, &act, null);
+
+    while (!stream_shutdown.load(.acquire)) {
+        const event = conn.next() catch |e| {
+            if (!is_json) {
+                if (e == error.EndOfStream) {
+                    stderr.writeAll("Connection closed by server\r\n") catch {};
+                } else {
+                    var err_buf: [256]u8 = undefined;
+                    const err_msg = std.fmt.bufPrint(&err_buf, "Connection error: {s}\r\n", .{@errorName(e)}) catch "Connection error\r\n";
+                    stderr.writeAll(err_msg) catch {};
+                }
+            }
+            return;
+        };
+
+        switch (event) {
+            .timeout => continue,
+            .closed => {
+                if (!is_json) {
+                    stderr.writeAll("Connection closed\r\n") catch {};
+                }
+                return;
+            },
+            .message => |msg| {
+                if (msg.channel != .allMids) continue;
+
+                // Extract the price for our coin from allMids data
+                // Format: {"channel":"allMids","data":{"mids":{"BTC":"100234.5","ETH":"3456.7",...}}}
+                const price_str = extractMidPrice(msg.raw_json, coin) orelse continue;
+                const mid_price = std.fmt.parseFloat(f64, price_str) catch continue;
+
+                const triggered = if (is_above) mid_price >= threshold else mid_price <= threshold;
+                if (!triggered) continue;
+
+                // --- Triggered! ---
+                const now = @as(u64, @intCast(std.time.milliTimestamp()));
+
+                if (is_json) {
+                    var json_buf: [512]u8 = undefined;
+                    const json_out = std.fmt.bufPrint(&json_buf,
+                        \\{{"coin":"{s}","price":"{s}","condition":"{s}","threshold":"{s}","timestamp":{d}}}
+                    , .{
+                        coin,
+                        price_str,
+                        if (is_above) @as([]const u8, "above") else @as([]const u8, "below"),
+                        threshold_str,
+                        now,
+                    }) catch continue;
+                    stdout.writeAll(json_out) catch return;
+                    stdout.writeAll("\n") catch return;
+                } else {
+                    var alert_buf: [256]u8 = undefined;
+                    const alert = std.fmt.bufPrint(&alert_buf, "\xe2\x9a\xa1 {s} hit {s} (was watching: {s} {s})\r\n", .{
+                        coin,
+                        price_str,
+                        if (is_above) @as([]const u8, "--above") else @as([]const u8, "--below"),
+                        threshold_str,
+                    }) catch "⚡ Alert triggered!\r\n";
+                    stdout.writeAll(alert) catch {};
+                }
+
+                // Execute shell command if provided
+                if (a.cmd) |cmd_str| {
+                    var child = std.process.Child.init(
+                        &.{ "/bin/sh", "-c", cmd_str },
+                        allocator,
+                    );
+                    child.stdout_behavior = .Inherit;
+                    child.stderr_behavior = .Inherit;
+                    child.stdin_behavior = .Close;
+                    child.spawn() catch |e| {
+                        if (!is_json) {
+                            var err_buf: [256]u8 = undefined;
+                            const err_msg = std.fmt.bufPrint(&err_buf, "Failed to execute command: {s}\r\n", .{@errorName(e)}) catch "Failed to execute command\r\n";
+                            stderr.writeAll(err_msg) catch {};
+                        }
+                        if (!a.repeat) return;
+                        continue;
+                    };
+                    _ = child.wait() catch {};
+                }
+
+                if (!a.repeat) return;
+            },
+        }
+    }
+
+    if (!is_json) {
+        stderr.writeAll("\r\n") catch {};
+    }
+}
+
+/// Extract a coin's mid price from an allMids WS message.
+/// Looks for `"COIN":"price"` inside the `"mids":{...}` object.
+fn extractMidPrice(json: []const u8, coin: []const u8) ?[]const u8 {
+    // Build search key: "COIN":"
+    var key_buf: [32]u8 = undefined;
+    const key = std.fmt.bufPrint(&key_buf, "\"{s}\":\"", .{coin}) catch return null;
+    const idx = std.mem.indexOf(u8, json, key) orelse return null;
+    const val_start = idx + key.len;
+    const val_end = std.mem.indexOfPos(u8, json, val_start, "\"") orelse return null;
+    return json[val_start..val_end];
+}
+
 fn streamPretty(stdout: std.fs.File, kind: args_mod.StreamKind, text: []const u8) void {
     const channel = ws_types.parseChannel(text);
     const data_slice = ws_types.extractData(text);
@@ -4492,4 +4654,26 @@ pub fn subaccountCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a
             }
         },
     }
+}
+
+test "extractMidPrice: finds coin price in allMids message" {
+    const msg =
+        \\{"channel":"allMids","data":{"mids":{"BTC":"100234.5","ETH":"3456.7","SOL":"178.9"}}}
+    ;
+    try std.testing.expectEqualStrings("100234.5", extractMidPrice(msg, "BTC").?);
+    try std.testing.expectEqualStrings("3456.7", extractMidPrice(msg, "ETH").?);
+    try std.testing.expectEqualStrings("178.9", extractMidPrice(msg, "SOL").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), extractMidPrice(msg, "DOGE"));
+}
+
+test "extractMidPrice: returns null for missing coin" {
+    const msg =
+        \\{"channel":"allMids","data":{"mids":{"BTC":"50000"}}}
+    ;
+    try std.testing.expectEqual(@as(?[]const u8, null), extractMidPrice(msg, "ETH"));
+}
+
+test "extractMidPrice: returns null for empty message" {
+    try std.testing.expectEqual(@as(?[]const u8, null), extractMidPrice("", "BTC"));
+    try std.testing.expectEqual(@as(?[]const u8, null), extractMidPrice("{}", "BTC"));
 }

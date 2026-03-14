@@ -39,6 +39,7 @@ pub const Command = union(enum) {
     rate_limit: UserQuery,
     stake: StakeArgs,
     vault: VaultArgs,
+    watch: WatchArgs,
     ledger: LedgerArgs,
     approve_builder: ApproveBuilderArgs,
     subaccount: SubAccountArgs,
@@ -82,6 +83,7 @@ pub const HelpTopic = enum {
     rate_limit,
     stake,
     vault,
+    watch,
     ledger,
     approve_builder,
     subaccount,
@@ -249,6 +251,14 @@ pub const FillsArgs = struct {
     address: ?[]const u8 = null,
     start_time: ?[]const u8 = null,
     end_time: ?[]const u8 = null,
+};
+
+pub const WatchArgs = struct {
+    coin: []const u8,
+    above: ?[]const u8 = null,
+    below: ?[]const u8 = null,
+    cmd: ?[]const u8 = null,
+    repeat: bool = false,
 };
 
 pub const WithdrawArgs = struct {
@@ -484,6 +494,8 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         .{ .stake = parseStake(rest) }
     else if (std.mem.eql(u8, cmd_str, "vault"))
         .{ .vault = parseVault(rest) }
+    else if (std.mem.eql(u8, cmd_str, "watch"))
+        .{ .watch = parseWatch(rest) orelse return error.MissingArgument }
     else if (std.mem.eql(u8, cmd_str, "ledger"))
         .{ .ledger = parseLedger(rest) }
     else if (std.mem.eql(u8, cmd_str, "approve-builder"))
@@ -703,6 +715,7 @@ fn canonicalHelpTopic(name: []const u8) ?HelpTopic {
     if (std.mem.eql(u8, name, "rate-limit") or std.mem.eql(u8, name, "ratelimit")) return .rate_limit;
     if (std.mem.eql(u8, name, "stake") or std.mem.eql(u8, name, "staking")) return .stake;
     if (std.mem.eql(u8, name, "vault")) return .vault;
+    if (std.mem.eql(u8, name, "watch")) return .watch;
     if (std.mem.eql(u8, name, "ledger")) return .ledger;
     if (std.mem.eql(u8, name, "approve-builder")) return .approve_builder;
     if (std.mem.eql(u8, name, "subaccount")) return .subaccount;
@@ -971,6 +984,31 @@ fn parseVault(args: []const []const u8) VaultArgs {
         // Bare "vault 0xaddr" form
         result.vault_address = args[0];
     }
+    return result;
+}
+
+// watch BTC --above 100000 --cmd "echo triggered" --repeat
+fn parseWatch(args: []const []const u8) ?WatchArgs {
+    if (args.len < 1) return null;
+    var result = WatchArgs{ .coin = args[0] };
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const a = args[i];
+        if (std.mem.eql(u8, a, "--above") and i + 1 < args.len) {
+            i += 1;
+            result.above = args[i];
+        } else if (std.mem.eql(u8, a, "--below") and i + 1 < args.len) {
+            i += 1;
+            result.below = args[i];
+        } else if (std.mem.eql(u8, a, "--cmd") and i + 1 < args.len) {
+            i += 1;
+            result.cmd = args[i];
+        } else if (std.mem.eql(u8, a, "--repeat")) {
+            result.repeat = true;
+        }
+    }
+    // Must have at least one condition
+    if (result.above == null and result.below == null) return null;
     return result;
 }
 

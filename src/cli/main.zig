@@ -108,6 +108,7 @@ pub fn main() !void {
         .rate_limit => |a| commands.rateLimitCmd(allocator, &w, config, a) catch |e| return exit(&w, "rate-limit", e),
         .stake => |a| commands.stakeCmd(allocator, &w, config, a) catch |e| return exit(&w, "stake", e),
         .vault => |a| commands.vaultCmd(allocator, &w, config, a) catch |e| return exit(&w, "vault", e),
+        .watch => |a| commands.watch(allocator, &w, config, a) catch |e| return exit(&w, "watch", e),
         .ledger => |a| commands.ledgerCmd(allocator, &w, config, a) catch |e| return exit(&w, "ledger", e),
         .approve_builder => |a| commands.approveBuilderCmd(allocator, &w, config, a) catch |e| return exit(&w, "approve-builder", e),
         .subaccount => |a| commands.subaccountCmd(allocator, &w, config, a) catch |e| return exit(&w, "subaccount", e),
@@ -318,9 +319,10 @@ fn printGlobalHelp(w: *output_mod.Writer) !void {
         \\
     , .{});
 
-    try w.styled(Style.bold_white, "STREAMING\n");
+    try w.styled(Style.bold_white, "STREAMING & ALERTS\n");
     try w.print(
         \\  stream trades|bbo|book|candles|mids|fills|orders <COIN|ADDR>
+        \\  watch <COIN> --above|--below <PX> [--cmd <CMD>] [--repeat]
         \\
         \\
     , .{});
@@ -869,6 +871,25 @@ fn printCommandHelp(w: *output_mod.Writer, topic: args_mod.HelpTopic) !void {
         ,
             \\  hlz vault 0xvault...
             \\  hlz vault deposit 0xvault... 100
+            \\
+        ),
+        .watch => try printCommandDoc(w, "watch", "Watch a price condition and optionally execute a command.",
+            \\  hlz watch <COIN> --above <PRICE>
+            \\  hlz watch <COIN> --below <PRICE>
+            \\  hlz watch <COIN> --above <PRICE> --cmd <SHELL_CMD>
+            \\  hlz watch <COIN> --below <PRICE> --cmd <SHELL_CMD> --repeat
+            \\
+        , null,
+            \\  Subscribes to the allMids WebSocket channel and monitors the target coin's mid price.
+            \\  When the price crosses the threshold, prints an alert and optionally executes a shell
+            \\  command via /bin/sh -c. By default, exits after the first trigger. Use --repeat to
+            \\  keep watching. Output is JSON when piped or with --json.
+            \\
+        ,
+            \\  hlz watch BTC --above 100000
+            \\  hlz watch ETH --below 3000 --cmd "echo alert"
+            \\  hlz watch BTC --above 100000 --cmd "hlz sell BTC 0.1" --repeat
+            \\  hlz watch BTC --above 0 --json | jq .price
             \\
         ),
         .ledger => try printCommandDoc(w, "ledger", "Show non-funding ledger updates.", 
