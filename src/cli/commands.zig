@@ -2846,10 +2846,14 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
         }
         retries = 0;
 
-        const should_exit = watchReadLoop(conn, a, is_json, is_above, threshold, threshold_str, display_coin, lookup_coin, stdout, stderr);
+        const result = watchReadLoop(conn, a, is_json, is_above, threshold, threshold_str, display_coin, lookup_coin, stdout, stderr);
         conn.close();
 
-        if (should_exit) return;
+        switch (result) {
+            .exit => return,
+            .invalid_coin => return failFmt(w, "unknown coin: {s} — not found in allMids", .{display_coin}),
+            .reconnect => {},
+        }
 
         // Connection lost — reconnect unless shutting down
         if (stream_shutdown.load(.acquire)) break;
@@ -2868,6 +2872,8 @@ pub fn watch(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_m
 /// Uses edge detection: only triggers when condition transitions from
 /// not-met to met, preventing repeated firing while price stays on the
 /// same side of the threshold.
+const WatchResult = enum { exit, reconnect, invalid_coin };
+
 fn watchReadLoop(
     conn: *WsConnection,
     a: args_mod.WatchArgs,
@@ -2879,10 +2885,11 @@ fn watchReadLoop(
     lookup_coin: []const u8,
     stdout: std.fs.File,
     stderr: std.fs.File,
-) bool {
+) WatchResult {
     // Edge detection state: tracks whether the condition was met on the
     // previous tick. We only fire when transitioning from false → true.
     var was_met: bool = false;
+    var coin_validated: bool = false;
 
     while (!stream_shutdown.load(.acquire)) {
         const event = conn.next() catch |e| {
@@ -2895,14 +2902,22 @@ fn watchReadLoop(
                     stderr.writeAll(err_msg) catch {};
                 }
             }
-            return false; // reconnect
+            return .reconnect;
         };
 
         switch (event) {
             .timeout => continue,
-            .closed => return false, // reconnect
+            .closed => return .reconnect,
             .message => |msg| {
                 if (msg.channel != .allMids) continue;
+
+                // Validate coin exists on first allMids message
+                if (!coin_validated) {
+                    coin_validated = true;
+                    if (extractMidPrice(msg.raw_json, lookup_coin) == null) {
+                        return .invalid_coin;
+                    }
+                }
 
                 const price_str = extractMidPrice(msg.raw_json, lookup_coin) orelse continue;
                 const mid_price = std.fmt.parseFloat(f64, price_str) catch continue;
@@ -2932,8 +2947,8 @@ fn watchReadLoop(
                         threshold_str,
                         now,
                     }) catch continue;
-                    stdout.writeAll(json_out) catch return true;
-                    stdout.writeAll("\n") catch return true;
+                    stdout.writeAll(json_out) catch return .exit;
+                    stdout.writeAll("\n") catch return .exit;
                 } else {
                     var alert_buf: [256]u8 = undefined;
                     const alert = std.fmt.bufPrint(&alert_buf, "\xe2\x9a\xa1 {s} hit {s} (was watching: {s} {s})\r\n", .{
@@ -2951,8 +2966,15 @@ fn watchReadLoop(
                         &.{ "/bin/sh", "-c", cmd_str },
                         std.heap.page_allocator,
                     );
-                    child.stdout_behavior = .Inherit;
-                    child.stderr_behavior = .Inherit;
+                    // In JSON/pipe mode, redirect child output to stderr
+                    // to keep stdout clean for machine-readable JSON.
+                    if (is_json) {
+                        child.stdout_behavior = .Ignore;
+                        child.stderr_behavior = .Inherit;
+                    } else {
+                        child.stdout_behavior = .Inherit;
+                        child.stderr_behavior = .Inherit;
+                    }
                     child.stdin_behavior = .Close;
                     child.spawn() catch |e| {
                         if (!is_json) {
@@ -2960,17 +2982,17 @@ fn watchReadLoop(
                             const err_msg = std.fmt.bufPrint(&err_buf, "Failed to execute command: {s}\r\n", .{@errorName(e)}) catch "Failed to execute command\r\n";
                             stderr.writeAll(err_msg) catch {};
                         }
-                        if (!a.repeat) return true;
+                        if (!a.repeat) return .exit;
                         continue;
                     };
                     _ = child.wait() catch {};
                 }
 
-                if (!a.repeat) return true;
+                if (!a.repeat) return .exit;
             },
         }
     }
-    return true; // SIGINT
+    return .exit; // SIGINT
 }
 
 /// Extract a coin's mid price from an allMids WS message.
