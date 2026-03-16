@@ -102,6 +102,41 @@ var buf: [32]u8 = undefined;
 const str = total.toString(&buf);
 ```
 
+## Outcome Types
+
+### `OutcomeMeta`
+
+```zig
+const OutcomeMeta = struct {
+    outcomes: []OutcomeInfo,
+    questions: []OutcomeQuestion,
+};
+```
+
+### `OutcomeInfo`
+
+```zig
+const OutcomeInfo = struct {
+    outcome: u32,           // Outcome ID
+    name: []const u8,       // e.g. "Recurring"
+    description: []const u8, // e.g. "class:priceBinary|underlying:BTC|..."
+    sideSpecs: []OutcomeSideSpec,
+};
+```
+
+### `OutcomeQuestion`
+
+```zig
+const OutcomeQuestion = struct {
+    question: u32,
+    name: []const u8,
+    description: []const u8,
+    fallbackOutcome: ?u32,
+    namedOutcomes: []u32,
+    settledNamedOutcomes: []u32,
+};
+```
+
 ## Asset Index Resolution
 
 The SDK resolves human-readable asset names to numeric indices at runtime:
@@ -109,8 +144,9 @@ The SDK resolves human-readable asset names to numeric indices at runtime:
 ```
 "BTC"        → asset index 0
 "ETH"        → asset index 1
-"PURR/USDC"  → spot market index
-"xyz:BTC"    → HIP-3 DEX market index
+"PURR/USDC"  → spot market index (10000 + index)
+"xyz:BTC"    → HIP-3 DEX market index (100000 + dex * 10000 + index)
+"#12730"     → outcome market (100_000_000 + encoding)
 ```
 
-This resolution uses the metadata from `getMetaAndAssetCtxs()`.
+This resolution uses the metadata from `getMetaAndAssetCtxs()`, `getSpotMeta()`, and `getOutcomeMeta()`.

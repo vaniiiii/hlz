@@ -1161,6 +1161,135 @@ pub fn spotMarkets(allocator: std.mem.Allocator, w: *Writer, config: Config, a: 
     try w.footer();
 }
 
+pub fn outcomes(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mod.MarketArgs) !void {
+    var client = makeClient(allocator, config);
+    defer client.deinit();
+
+    if (w.format == .json) {
+        var raw = try client.outcomeMeta();
+        defer raw.deinit();
+        try w.jsonRaw(raw.body);
+        return;
+    }
+
+    var typed = try client.getOutcomeMeta();
+    defer typed.deinit();
+    const ocs = typed.value.outcomes;
+
+    if (w.is_tty and !a.all and a.page == 1 and a.filter == null) {
+        return outcomesTui(allocator, ocs);
+    }
+
+    try w.heading("OUTCOME MARKETS");
+    const hdr = [_]Column{
+        .{ .text = "ID", .width = 6, .align_right = true },
+        .{ .text = "NAME", .width = 24 },
+        .{ .text = "SIDES", .width = 20 },
+        .{ .text = "DESCRIPTION", .width = 50 },
+    };
+    try w.tableHeader(&hdr);
+
+    const per_page: usize = 20;
+    const start = if (a.all) @as(usize, 0) else (a.page -| 1) * per_page;
+    const limit = if (a.all) ocs.len else per_page;
+
+    var total: usize = 0;
+    for (ocs) |o| {
+        if (a.filter) |f| {
+            if (!containsInsensitive(o.name, f) and !containsInsensitive(o.description, f)) continue;
+        }
+        total += 1;
+    }
+
+    var shown: usize = 0;
+    var skipped: usize = 0;
+    for (ocs) |o| {
+        if (shown >= limit) break;
+        if (a.filter) |f| {
+            if (!containsInsensitive(o.name, f) and !containsInsensitive(o.description, f)) continue;
+        }
+        if (skipped < start) { skipped += 1; continue; }
+        var id_buf: [8]u8 = undefined;
+        var sides_buf: [64]u8 = undefined;
+        const sides_len = formatOutcomeSides(o.sideSpecs, &sides_buf);
+
+        const cols = [_]Column{
+            .{ .text = std.fmt.bufPrint(&id_buf, "{d}", .{o.outcome}) catch "?", .width = 6, .align_right = true },
+            .{ .text = o.name, .width = 24, .color = Style.cyan },
+            .{ .text = sides_buf[0..sides_len], .width = 20 },
+            .{ .text = o.description, .width = 50 },
+        };
+        try w.tableRow(&cols);
+        shown += 1;
+    }
+    const pages = (total + per_page - 1) / per_page;
+    if (!a.all and start + shown < total) try w.paginatePage(shown, total, a.page, pages);
+    try w.footer();
+}
+
+/// Format outcome side specs as "Side0 / Side1" into a fixed buffer.
+fn formatOutcomeSides(specs: []const response.OutcomeSideSpec, buf: *[64]u8) usize {
+    var len: usize = 0;
+    for (specs, 0..) |s, i| {
+        if (i > 0 and len + 3 < buf.len) {
+            @memcpy(buf[len .. len + 3], " / ");
+            len += 3;
+        }
+        const remaining = buf.len - len;
+        const copy_len = @min(s.name.len, remaining);
+        @memcpy(buf[len .. len + copy_len], s.name[0..copy_len]);
+        len += copy_len;
+    }
+    return len;
+}
+
+fn outcomesTui(allocator: std.mem.Allocator, ocs: []const response.OutcomeInfo) !void {
+    const n = @min(ocs.len, ListW.MAX_ITEMS);
+
+    const CellBuf = struct {
+        id: [8]u8 = undefined,
+        id_len: usize = 0,
+        sides: [64]u8 = undefined,
+        sides_len: usize = 0,
+    };
+    var cell_bufs: [ListW.MAX_ITEMS]CellBuf = undefined;
+    var items: [ListW.MAX_ITEMS]ListW.Item = undefined;
+
+    const cyan = BufMod.Style{ .fg = .cyan, .bold = true };
+
+    for (0..n) |i| {
+        const o = ocs[i];
+        const id_s = std.fmt.bufPrint(&cell_bufs[i].id, "{d}", .{o.outcome}) catch "?";
+        cell_bufs[i].id_len = id_s.len;
+
+        cell_bufs[i].sides_len = formatOutcomeSides(o.sideSpecs, &cell_bufs[i].sides);
+
+        items[i] = .{
+            .cells = cellsInit(&.{
+                cell_bufs[i].id[0..cell_bufs[i].id_len],
+                o.name,
+                cell_bufs[i].sides[0..cell_bufs[i].sides_len],
+                o.description,
+            }),
+            .styles = stylesInit(&.{ .{}, cyan }),
+            .sort_key = @as(f64, @floatFromInt(o.outcome)),
+        };
+    }
+
+    const columns = [_]ListW.Column{
+        .{ .label = "ID", .width = 8, .right_align = true },
+        .{ .label = "NAME", .width = 24 },
+        .{ .label = "SIDES", .width = 20 },
+        .{ .label = "DESCRIPTION", .width = 50 },
+    };
+
+    try runListView(&columns, &items, n, .{
+        .title = "OUTCOME MARKETS",
+        .help = "j/k:nav  /:search  s:sort  q:quit",
+        .allocator = allocator,
+    });
+}
+
 fn spotTui(allocator: std.mem.Allocator, tokens_arr: []const response.SpotToken) !void {
     const n = @min(tokens_arr.len, ListW.MAX_ITEMS);
 
@@ -1246,9 +1375,12 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
     } else .{ .limit = .{ .tif = .FrontendMarket } };
 
     // For spot orders, derive @index from resolved asset for book lookup
+    // For outcome orders, use #<encoding> format
     var book_idx_buf: [16]u8 = undefined;
     var book_coin_upper: [16]u8 = undefined;
-    const book_coin = if (asset > 10000 and isSpotAsset(asset))
+    const book_coin = if (isOutcomeAsset(asset))
+        (std.fmt.bufPrint(&book_idx_buf, "#{d}", .{asset - 100_000_000}) catch a.coin)
+    else if (asset > 10000 and isSpotAsset(asset))
         (std.fmt.bufPrint(&book_idx_buf, "@{d}", .{asset - 10000}) catch a.coin)
     else if (asset == 10000 and isSpotAsset(asset))
         upperCoin(a.coin, &book_coin_upper) // PURR/USDC (index 0) uses pair name
@@ -1286,7 +1418,7 @@ pub fn placeOrder(allocator: std.mem.Allocator, w: *Writer, config: Config, a: a
 
     // Round to valid tick size
     const limit_px = if (resolved.sz_decimals >= 0) blk: {
-        const pt = if (isSpotAsset(asset))
+        const pt = if (isSpotAsset(asset) or isOutcomeAsset(asset))
             tick_mod.PriceTick.forSpot(resolved.sz_decimals)
         else
             tick_mod.PriceTick.forPerp(resolved.sz_decimals);
@@ -2575,6 +2707,11 @@ fn isSpotAsset(asset: anytype) bool {
     return a >= 10000 and a < 100000;
 }
 
+fn isOutcomeAsset(asset: anytype) bool {
+    const a: u64 = @intCast(asset);
+    return a >= 100_000_000;
+}
+
 const ResolvedAsset = struct {
     index: usize,
     sz_decimals: i32, // -1 = unknown (raw index input)
@@ -2584,6 +2721,18 @@ const ResolvedAsset = struct {
 fn resolveAsset(client: *Client, coin: []const u8) !ResolvedAsset {
     if (std.fmt.parseInt(usize, coin, 10) catch null) |idx|
         return .{ .index = idx, .sz_decimals = -1 };
+
+    // Outcome coins: #<encoding> where encoding = 10 * outcome_id + side
+    // Asset ID = 100_000_000 + encoding
+    if (coin.len > 1 and coin[0] == '#') {
+        if (std.fmt.parseInt(u32, coin[1..], 10) catch null) |encoding| {
+            return .{
+                .index = 100_000_000 + @as(usize, encoding),
+                .sz_decimals = 0, // outcome shares are whole units
+            };
+        }
+        return error.AssetNotFound;
+    }
 
     if (std.mem.indexOf(u8, coin, "/")) |slash| {
         const base = coin[0..slash];
@@ -3584,10 +3733,12 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         try w.print("{s}  interval: {d}s\n\n", .{ smartFmt(&sb, slice_sz), interval_ms / 1000 });
     }
 
-    // Resolve spot @index for book lookup
+    // Resolve spot @index / outcome #encoding for book lookup
     var twap_book_buf: [16]u8 = undefined;
     var twap_coin_upper: [16]u8 = undefined;
-    const twap_book_coin = if (asset > 10000 and isSpotAsset(asset))
+    const twap_book_coin = if (isOutcomeAsset(asset))
+        (std.fmt.bufPrint(&twap_book_buf, "#{d}", .{asset - 100_000_000}) catch a.coin)
+    else if (asset > 10000 and isSpotAsset(asset))
         (std.fmt.bufPrint(&twap_book_buf, "@{d}", .{asset - 10000}) catch a.coin)
     else if (asset == 10000 and isSpotAsset(asset))
         upperCoin(a.coin, &twap_coin_upper)
@@ -3619,7 +3770,7 @@ pub fn twap(allocator: std.mem.Allocator, w: *Writer, config: Config, a: args_mo
         const px_str = slippageFmt(&px_buf, slip_px);
         const limit_px_raw = Decimal.fromString(px_str) catch continue;
         const limit_px = if (resolved.sz_decimals >= 0) blk: {
-            const pt = if (isSpotAsset(asset))
+            const pt = if (isSpotAsset(asset) or isOutcomeAsset(asset))
                 hlz.hypercore.tick.PriceTick.forSpot(resolved.sz_decimals)
             else
                 hlz.hypercore.tick.PriceTick.forPerp(resolved.sz_decimals);
@@ -3856,10 +4007,12 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
         }
 
         if (!found_price) {
-            // Market order — resolve spot @index for book lookup
+            // Market order — resolve spot @index / outcome #encoding for book lookup
             var batch_book_buf: [16]u8 = undefined;
             var batch_coin_upper: [16]u8 = undefined;
-            const batch_book_coin = if (asset_idx > 10000 and isSpotAsset(asset_idx))
+            const batch_book_coin = if (isOutcomeAsset(asset_idx))
+                (std.fmt.bufPrint(&batch_book_buf, "#{d}", .{asset_idx - 100_000_000}) catch coin)
+            else if (asset_idx > 10000 and isSpotAsset(asset_idx))
                 (std.fmt.bufPrint(&batch_book_buf, "@{d}", .{asset_idx - 10000}) catch coin)
             else if (asset_idx == 10000 and isSpotAsset(asset_idx))
                 upperCoin(coin, &batch_coin_upper)
@@ -3875,7 +4028,7 @@ pub fn batchCmd(allocator: std.mem.Allocator, w: *Writer, config: Config, a: arg
 
         // Round to valid tick size
         if (resolved_asset.sz_decimals >= 0) {
-            const pt = if (isSpotAsset(asset_idx))
+            const pt = if (isSpotAsset(asset_idx) or isOutcomeAsset(asset_idx))
                 hlz.hypercore.tick.PriceTick.forSpot(resolved_asset.sz_decimals)
             else
                 hlz.hypercore.tick.PriceTick.forPerp(resolved_asset.sz_decimals);

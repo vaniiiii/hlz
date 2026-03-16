@@ -356,6 +356,33 @@ pub const SpotAssetCtx = struct {
     totalSupply: ?[]const u8 = null,
 };
 
+// ── Outcomes ──────────────────────────────────────────────────
+
+pub const OutcomeSideSpec = struct {
+    name: []const u8 = "",
+};
+
+pub const OutcomeInfo = struct {
+    outcome: u32 = 0,
+    name: []const u8 = "",
+    description: []const u8 = "",
+    sideSpecs: []OutcomeSideSpec = &.{},
+};
+
+pub const OutcomeQuestion = struct {
+    question: u32 = 0,
+    name: []const u8 = "",
+    description: []const u8 = "",
+    fallbackOutcome: ?u32 = null,
+    namedOutcomes: []u32 = &.{},
+    settledNamedOutcomes: []u32 = &.{},
+};
+
+pub const OutcomeMeta = struct {
+    outcomes: []OutcomeInfo = &.{},
+    questions: []OutcomeQuestion = &.{},
+};
+
 pub const TokenDetails = struct {
     name: []const u8 = "",
     szDecimals: u32 = 0,
@@ -642,6 +669,22 @@ test "SpotToken auto-parse" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings("PURR", parsed.value.name);
     try std.testing.expectEqual(@as(u32, 1), parsed.value.index);
+}
+
+test "OutcomeMeta auto-parse" {
+    const body =
+        \\{"outcomes":[{"outcome":1273,"name":"Recurring","description":"class:priceBinary|underlying:BTC|expiry:20260317-0300|targetPrice:74212|period:1d","sideSpecs":[{"name":"Yes"},{"name":"No"}]}],"questions":[{"question":1,"name":"What will Hypurr eat?","description":"Food journal.","fallbackOutcome":13,"namedOutcomes":[10,11,12],"settledNamedOutcomes":[]}]}
+    ;
+    const parsed = try std.json.parseFromSlice(OutcomeMeta, std.testing.allocator, body, ParseOpts);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.outcomes.len);
+    try std.testing.expectEqual(@as(u32, 1273), parsed.value.outcomes[0].outcome);
+    try std.testing.expectEqualStrings("Recurring", parsed.value.outcomes[0].name);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.outcomes[0].sideSpecs.len);
+    try std.testing.expectEqualStrings("Yes", parsed.value.outcomes[0].sideSpecs[0].name);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.questions.len);
+    try std.testing.expectEqual(@as(u32, 1), parsed.value.questions[0].question);
+    try std.testing.expectEqual(@as(usize, 3), parsed.value.questions[0].namedOutcomes.len);
 }
 
 test "parseResponseStatus" {

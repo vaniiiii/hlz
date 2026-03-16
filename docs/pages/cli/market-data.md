@@ -108,6 +108,32 @@ hlz spot                    # Top spot markets
 hlz spot --all              # All spot markets
 ```
 
+## `hlz outcomes [--all]`
+
+List outcome (prediction) markets. Each outcome has two sides (e.g. Yes/No) that trade between 0 and 1, with prices representing market-implied probability.
+
+Outcome assets use a special encoding: `encoding = 10 * outcome_id + side` (side 0 or 1). Three representations:
+- **Coin**: `#<encoding>` (e.g. `#12730`) — used in `book`, `mids`, `stream`
+- **Token**: `+<encoding>` (e.g. `+12730`)
+- **Asset ID**: `100_000_000 + encoding` (e.g. `100012730`) — used in order actions
+
+```bash
+hlz outcomes                    # List all outcome markets
+hlz outcomes --all              # All (no pagination)
+hlz outcomes Recurring          # Filter by name or description
+hlz outcomes BTC                # Find BTC-related outcomes
+
+# View an outcome's order book
+hlz book '#12730'               # BTC price binary, side 0 (Yes)
+hlz book '#12731'               # BTC price binary, side 1 (No)
+
+# Check mid prices for outcomes
+hlz mids --chain testnet | grep '#'
+
+# JSON output includes questions (grouped outcomes)
+hlz outcomes --json
+```
+
 ## `hlz dexes`
 
 List available HIP-3 DEXes with their collateral tokens.

@@ -13,7 +13,7 @@
 
 | Category | Commands | Auth Required |
 |----------|----------|---------------|
-| [Market Data](/cli/market-data) | `price`, `mids`, `funding`, `book`, `perps`, `spot`, `dexes` | No |
+| [Market Data](/cli/market-data) | `price`, `mids`, `funding`, `book`, `perps`, `spot`, `outcomes`, `dexes` | No |
 | [Trading](/cli/trading) | `buy`, `sell`, `cancel`, `modify`, `leverage`, `twap`, `batch` | Yes |
 | [Account](/cli/account) | `portfolio`, `positions`, `orders`, `fills`, `balance`, `status`, `referral` | Address only |
 | [Transfers](/cli/transfers) | `send` | Yes |
@@ -53,3 +53,4 @@ hlz uses a unified asset syntax across all commands:
 | `SYMBOL` | `BTC`, `ETH` | Perpetual on Hyperliquid DEX |
 | `BASE/QUOTE` | `PURR/USDC` | Spot market |
 | `dex:SYMBOL` | `xyz:BTC` | HIP-3 DEX perpetual |
+| `#ENCODING` | `#12730` | Outcome market side |

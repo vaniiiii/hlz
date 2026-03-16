@@ -153,6 +153,7 @@ defer result.deinit();
 | `hlz book <COIN> [--live]` | L2 order book |
 | `hlz perps [--dex xyz]` | Perpetual markets |
 | `hlz spot` | Spot markets |
+| `hlz outcomes` | Outcome (prediction) markets |
 | `hlz dexes` | HIP-3 DEXes |
 
 </details>

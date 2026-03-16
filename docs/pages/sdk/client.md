@@ -65,6 +65,7 @@ defer candles.deinit();
 | `getCandleSnapshot` | `[]Candle` | OHLCV candles |
 | `getFundingHistory` | `[]FundingEntry` | Funding rate history |
 | `getSpotMeta` | `SpotMeta` | Spot market metadata |
+| `getOutcomeMeta` | `OutcomeMeta` | Outcome market metadata |
 | `getSpotClearinghouseState` | `SpotClearinghouseState` | Spot balances |
 | `getPerpDexs` | `[]PerpDex` | HIP-3 DEX list |
 | `getUserFees` | `UserFees` | Fee rates |

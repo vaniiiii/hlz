@@ -14,6 +14,7 @@ pub const Command = union(enum) {
     balance: UserQuery,
     perps: MarketArgs,
     spot: MarketArgs,
+    outcomes: MarketArgs,
     dexes: void,
     buy: OrderArgs,
     sell: OrderArgs,
@@ -57,6 +58,7 @@ pub const HelpTopic = enum {
     balance,
     perps,
     spot,
+    outcomes,
     dexes,
     buy,
     sell,
@@ -434,6 +436,8 @@ pub fn parse(allocator: std.mem.Allocator) ParseError!ParseResult {
         .{ .perps = parseMarket(rest) }
     else if (std.mem.eql(u8, cmd_str, "spot"))
         .{ .spot = parseMarket(rest) }
+    else if (std.mem.eql(u8, cmd_str, "outcomes") or std.mem.eql(u8, cmd_str, "outcome"))
+        .{ .outcomes = parseMarket(rest) }
     else if (std.mem.eql(u8, cmd_str, "dexes") or std.mem.eql(u8, cmd_str, "dex"))
         .{ .dexes = {} }
     else if (std.mem.eql(u8, cmd_str, "buy") or std.mem.eql(u8, cmd_str, "long"))
@@ -678,6 +682,7 @@ fn canonicalHelpTopic(name: []const u8) ?HelpTopic {
     if (std.mem.eql(u8, name, "balance") or std.mem.eql(u8, name, "bal")) return .balance;
     if (std.mem.eql(u8, name, "perps")) return .perps;
     if (std.mem.eql(u8, name, "spot")) return .spot;
+    if (std.mem.eql(u8, name, "outcomes") or std.mem.eql(u8, name, "outcome")) return .outcomes;
     if (std.mem.eql(u8, name, "dexes") or std.mem.eql(u8, name, "dex")) return .dexes;
     if (std.mem.eql(u8, name, "buy") or std.mem.eql(u8, name, "long")) return .buy;
     if (std.mem.eql(u8, name, "sell") or std.mem.eql(u8, name, "short")) return .sell;

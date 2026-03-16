@@ -475,6 +475,13 @@ pub const Client = struct {
         );
     }
 
+    /// Fetch outcome markets metadata.
+    pub fn outcomeMeta(self: *Client) !InfoResult {
+        return self.infoRequest(
+            \\{"type":"outcomeMeta"}
+        );
+    }
+
     /// Fetch available perpetual DEXes.
     pub fn perpDexs(self: *Client) !InfoResult {
         return self.infoRequest(
@@ -1439,6 +1446,12 @@ pub const Client = struct {
     pub fn getSpotMeta(self: *Client) !Parsed(R.SpotMeta) {
         return self.infoTyped(R.SpotMeta,
             \\{"type":"spotMeta"}
+        );
+    }
+
+    pub fn getOutcomeMeta(self: *Client) !Parsed(R.OutcomeMeta) {
+        return self.infoTyped(R.OutcomeMeta,
+            \\{"type":"outcomeMeta"}
         );
     }
 

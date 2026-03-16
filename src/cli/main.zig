@@ -85,6 +85,7 @@ pub fn main() !void {
         .balance => |a| commands.balance(allocator, &w, config, a) catch |e| return exit(&w, "balance", e),
         .perps => |a| commands.perps(allocator, &w, config, a) catch |e| return exit(&w, "perps", e),
         .spot => |a| commands.spotMarkets(allocator, &w, config, a) catch |e| return exit(&w, "spot", e),
+        .outcomes => |a| commands.outcomes(allocator, &w, config, a) catch |e| return exit(&w, "outcomes", e),
         .dexes => commands.dexes(allocator, &w, config) catch |e| return exit(&w, "dexes", e),
         .buy => |a| commands.placeOrder(allocator, &w, config, a, true) catch |e| return exit(&w, "buy", e),
         .sell => |a| commands.placeOrder(allocator, &w, config, a, false) catch |e| return exit(&w, "sell", e),
@@ -258,6 +259,7 @@ fn printGlobalHelp(w: *output_mod.Writer) !void {
         \\  book <COIN> [--live]     L2 order book
         \\  perps [--dex xyz]        Perpetual markets
         \\  spot [--all]             Spot markets
+        \\  outcomes [--all]         Outcome (prediction) markets
         \\  dexes                    HIP-3 DEXes
         \\
         \\
@@ -562,6 +564,21 @@ fn printCommandHelp(w: *output_mod.Writer, topic: args_mod.HelpTopic) !void {
         ,
             \\  hlz spot
             \\  hlz spot PURR
+            \\
+        ),
+        .outcomes => try printCommandDoc(w, "outcomes", "List outcome (prediction) markets.", 
+            \\  hlz outcomes [FILTER] [--all] [--page <N>] [--filter <TEXT>]
+            \\
+        , null,
+            \\  A bare FILTER positional is treated the same as --filter.
+            \\  Use --all to disable pagination.
+            \\  Outcome asset IDs: 100_000_000 + (10 * outcome_id + side).
+            \\  Outcome coins use #<encoding> format (e.g. #12730).
+            \\
+        ,
+            \\  hlz outcomes
+            \\  hlz outcomes BTC
+            \\  hlz outcomes Recurring
             \\
         ),
         .dexes => try printCommandDoc(w, "dexes", "List available HIP-3 DEX venues.", 
