@@ -94,6 +94,87 @@ const ActionMode = enum(u2) { list, confirm, number };
 const LEVERAGE_MIN: u32 = 1;
 const LEVERAGE_MAX: u32 = 125;
 
+// ── Market Picker ───────────────────────────────────────────────
+
+const PickerTab = enum(u2) { perps, spot, outcomes };
+const PICKER_MAX: usize = 512;
+
+const PickerEntry = struct {
+    coin: [24]u8 = undefined,
+    coin_len: u8 = 0,
+    display: [48]u8 = undefined,
+    display_len: u8 = 0,
+    detail: [32]u8 = undefined,
+    detail_len: u8 = 0,
+    mid: [16]u8 = undefined,
+    mid_len: u8 = 0,
+
+    fn coinSlice(self: *const PickerEntry) []const u8 { return self.coin[0..self.coin_len]; }
+    fn displaySlice(self: *const PickerEntry) []const u8 { return self.display[0..self.display_len]; }
+    fn detailSlice(self: *const PickerEntry) []const u8 { return self.detail[0..self.detail_len]; }
+    fn midSlice(self: *const PickerEntry) []const u8 { return self.mid[0..self.mid_len]; }
+
+    fn matchesFilter(self: *const PickerEntry, filter: []const u8) bool {
+        if (filter.len == 0) return true;
+        return containsInsensitive(self.displaySlice(), filter) or
+            containsInsensitive(self.coinSlice(), filter) or
+            containsInsensitive(self.detailSlice(), filter);
+    }
+};
+
+fn containsInsensitive(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var ok = true;
+        for (0..needle.len) |j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) { ok = false; break; }
+        }
+        if (ok) return true;
+    }
+    return false;
+}
+
+const PickerState = struct {
+    open: bool = false,
+    tab: PickerTab = .perps,
+    selected: usize = 0,
+    scroll: usize = 0,
+    visible: usize = 20,
+    search: [24]u8 = undefined,
+    search_len: usize = 0,
+    entries: [PICKER_MAX]PickerEntry = undefined,
+    count: usize = 0,
+    loaded_tab: ?PickerTab = null,
+    loading: bool = false,
+
+    fn reset(self: *PickerState) void {
+        self.selected = 0;
+        self.scroll = 0;
+        self.search_len = 0;
+    }
+
+    fn filteredCount(self: *const PickerState) usize {
+        var n: usize = 0;
+        for (0..self.count) |i| {
+            if (self.entries[i].matchesFilter(self.search[0..self.search_len])) n += 1;
+        }
+        return n;
+    }
+
+    fn filteredEntry(self: *const PickerState, idx: usize) ?*const PickerEntry {
+        var n: usize = 0;
+        for (0..self.count) |i| {
+            if (self.entries[i].matchesFilter(self.search[0..self.search_len])) {
+                if (n == idx) return &self.entries[i];
+                n += 1;
+            }
+        }
+        return null;
+    }
+};
+
 const ResolvedAsset = struct {
     index: u32,
     sz_decimals: i32,
@@ -105,9 +186,26 @@ fn isSpotAsset(asset: anytype) bool {
     return a >= 10000 and a < 100000;
 }
 
+fn isOutcomeAsset(asset: anytype) bool {
+    const a: u64 = @intCast(asset);
+    return a >= 100_000_000;
+}
+
 fn resolveAsset(client: *Client, coin: []const u8) !ResolvedAsset {
     if (std.fmt.parseInt(u32, coin, 10) catch null) |idx| {
         return .{ .index = idx, .sz_decimals = -1, .max_leverage = LEVERAGE_MAX };
+    }
+
+    // Outcome coins: #<encoding> → asset 100_000_000 + encoding
+    if (coin.len > 1 and coin[0] == '#') {
+        if (std.fmt.parseInt(u32, coin[1..], 10) catch null) |encoding| {
+            return .{
+                .index = 100_000_000 + encoding,
+                .sz_decimals = 0,
+                .max_leverage = 1,
+            };
+        }
+        return error.AssetNotFound;
     }
 
     if (std.mem.indexOf(u8, coin, "/") != null) {
@@ -350,11 +448,11 @@ const UiState = struct {
     interval: []const u8 = "1m",
     chart_scroll: usize = 0,
     book_depth: usize = 20,
-    coin_input: [16]u8 = undefined,
-    coin_input_len: usize = 0,
-    coin_picking: bool = false,
+    picker: PickerState = .{},
     coin: [16]u8 = undefined,
     coin_len: usize = 0,
+    display_coin: [48]u8 = undefined,
+    display_coin_len: usize = 0,
     selected_row: usize = 0,
     scroll_offset: usize = 0,
     leverage: LeverageState = .{},
@@ -1068,30 +1166,61 @@ const Input = struct {
         ui.leverage.open = true;
     }
 
-    fn handleCoinPicker(key: @import("Terminal").Key, ui: *UiState, shared: *Shared) void {
+    fn handlePicker(key: @import("Terminal").Key, ui: *UiState, shared: *Shared) void {
+        const p = &ui.picker;
         switch (key) {
+            .tab => {
+                p.tab = switch (p.tab) { .perps => .spot, .spot => .outcomes, .outcomes => .perps };
+                p.loaded_tab = null;
+                p.reset();
+            },
             .char => |c| {
-                if (c == '/') { ui.coin_picking = false; }
-                else if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9')) {
-                    if (ui.coin_input_len < 15) { ui.coin_input[ui.coin_input_len] = std.ascii.toUpper(c); ui.coin_input_len += 1; }
+                if (c >= 32 and c < 127) {
+                    // Printable chars go to search
+                    if (p.search_len < p.search.len) {
+                        p.search[p.search_len] = c;
+                        p.search_len += 1;
+                        p.selected = 0;
+                        p.scroll = 0;
+                    }
                 }
             },
-            .backspace => ui.coin_input_len = ui.coin_input_len -| 1,
+            .backspace => {
+                if (p.search_len > 0) {
+                    p.search_len -= 1;
+                    p.selected = 0;
+                    p.scroll = 0;
+                }
+            },
+            .up => if (p.selected > 0) {
+                p.selected -= 1;
+                if (p.selected < p.scroll) p.scroll = p.selected;
+            },
+            .down => {
+                const fc = p.filteredCount();
+                if (fc > 0 and p.selected < fc - 1) {
+                    p.selected += 1;
+                    if (p.selected >= p.scroll + p.visible) p.scroll = p.selected + 1 -| p.visible;
+                }
+            },
             .enter => {
-                if (ui.coin_input_len > 0) {
-                    @memcpy(ui.coin[0..ui.coin_input_len], ui.coin_input[0..ui.coin_input_len]);
-                    ui.coin_len = ui.coin_input_len;
+                if (p.filteredEntry(p.selected)) |entry| {
+                    const n = entry.coin_len;
+                    @memcpy(ui.coin[0..n], entry.coin[0..n]);
+                    ui.coin_len = n;
+                    const dn = entry.display_len;
+                    @memcpy(ui.display_coin[0..dn], entry.display[0..dn]);
+                    ui.display_coin_len = dn;
                     shared.mu.lock();
                     shared.setCoin(ui.coin[0..ui.coin_len]);
                     shared.mu.unlock();
                     const fd = shared.ws_fd.load(.acquire);
                     if (fd != -1) _ = std.c.shutdown(fd, 2);
                     ui.chart_scroll = 0;
+                    p.open = false;
                 }
-                ui.coin_picking = false;
-                ui.coin_input_len = 0;
             },
-            .esc => { ui.coin_picking = false; ui.coin_input_len = 0; },
+            .esc => { p.open = false; },
             else => {},
         }
     }
@@ -1129,7 +1258,23 @@ const Render = struct {
         const order_rect = Rect{ .x = chart_w, .y = top_h + book_h + tape_h, .w = right_w, .h = order_h };
         const bottom_rect = Rect{ .x = 0, .y = top_h + main_h, .w = w, .h = bottom_h };
 
-        infoBar(buf, ui.coin[0..ui.coin_len], &snap.info, ui.interval, .{ .x = 0, .y = 0, .w = w, .h = top_h });
+        const bar_coin = if (ui.display_coin_len > 0) ui.display_coin[0..ui.display_coin_len] else ui.coin[0..ui.coin_len];
+        // For outcomes, derive mark price from book mid since there's no activeAssetCtx
+        var info_patched = snap.info;
+        if (ui.coin_len > 0 and ui.coin[0] == '#' and snap.info.mark_len == 0) {
+            if (snap.n_bids > 0 and snap.n_asks > 0) {
+                const bid = std.fmt.parseFloat(f64, snap.bids[0].px()) catch 0;
+                const ask = std.fmt.parseFloat(f64, snap.asks[0].px()) catch 0;
+                if (bid > 0 and ask > 0) {
+                    const mid = (bid + ask) / 2.0;
+                    const pct = mid * 100.0;
+                    const s = std.fmt.bufPrint(&info_patched.mark_buf, "{d:.3} ({d:.1}%)", .{ mid, pct }) catch "";
+                    info_patched.mark_len = s.len;
+                }
+            }
+        }
+        const is_outcome = ui.coin_len > 0 and ui.coin[0] == '#';
+        infoBar(buf, bar_coin, &info_patched, ui.interval, .{ .x = 0, .y = 0, .w = w, .h = top_h }, is_outcome);
 
         const end = if (ui.chart_scroll < snap.candle_count) snap.candle_count - ui.chart_scroll else 0;
         const live_px = std.fmt.parseFloat(f64, snap.info.mark()) catch 0;
@@ -1168,22 +1313,98 @@ const Render = struct {
         buf.putStr(w -| @as(u16, @intCast(badge.len)) -| 1, 0, badge, .{ .fg = hl_text, .bg = hl_accent, .bold = true });
         if (ui.actions.open) actionModal(buf, ui, snap, .{ .x = 0, .y = 0, .w = w, .h = h });
         if (ui.leverage.open) leverageModal(buf, ui, snap, .{ .x = 0, .y = 0, .w = w, .h = h });
+        if (ui.picker.open) pickerModal(buf, ui, .{ .x = 0, .y = 0, .w = w, .h = h });
 
         app.endFrame();
     }
 
-    fn coinPickerOverlay(app: *App, ui: *const UiState) void {
-        const buf = &app.buf;
-        const w = app.width();
-        const bx = w / 2 -| 16;
-        const bg = Style{ .fg = hl_text, .bg = hl_panel };
-        var px: u16 = bx;
-        while (px < bx + 32 and px < w) : (px += 1) buf.putStr(px, 0, " ", bg);
-        buf.putStr(bx + 1, 0, "/ ", .{ .fg = hl_accent, .bg = hl_panel, .bold = true });
-        buf.putStr(bx + 3, 0, ui.coin_input[0..ui.coin_input_len], .{ .fg = hl_text, .bg = hl_panel, .bold = true });
-        buf.putStr(bx + 3 + @as(u16, @intCast(ui.coin_input_len)), 0, "\xe2\x96\x88", .{ .fg = hl_accent, .bg = hl_panel });
-        buf.flush(&app.prev);
-        @memcpy(app.prev.cells, app.buf.cells);
+    fn pickerModal(buf: *Buffer, ui: *const UiState, rect: Rect) void {
+        const p = &ui.picker;
+
+        // Scrim
+        const scrim = Style{ .bg = C.hex(0x0b1519) };
+        var sy: u16 = 0;
+        while (sy < rect.h) : (sy += 1) {
+            var sx: u16 = 0;
+            while (sx < rect.w) : (sx += 1) buf.putStr(rect.x + sx, rect.y + sy, " ", scrim);
+        }
+
+        // Modal box
+        const mw: u16 = @min(72, rect.w -| 4);
+        const mh: u16 = @min(30, rect.h -| 2);
+        const mx = rect.x + (rect.w -| mw) / 2;
+        const my = rect.y + (rect.h -| mh) / 2;
+        const mrect = Rect{ .x = mx, .y = my, .w = mw, .h = mh };
+        buf.drawBox(mrect, "Markets", s_cyan);
+        if (mw < 40 or mh < 10) return;
+
+        const ix = mx + 2;
+        var y = my + 1;
+
+        // Tabs
+        const tab_s = Style{ .fg = hl_accent, .bold = true };
+        const tab_dim = Style{ .fg = hl_muted };
+        var tx: u16 = ix;
+        inline for (.{ .{ .t = PickerTab.perps, .l = "Perps" }, .{ .t = PickerTab.spot, .l = "Spot" }, .{ .t = PickerTab.outcomes, .l = "Outcomes" } }) |tab| {
+            const active = p.tab == tab.t;
+            buf.putStr(tx, y, tab.l, if (active) tab_s else tab_dim);
+            tx += @as(u16, @intCast(tab.l.len)) + 2;
+        }
+        buf.putStr(mx + mw -| 14, y, "Tab:switch", s_dim);
+        y += 1;
+
+        // Search bar
+        buf.putStr(ix, y, "/", s_cyan);
+        if (p.search_len > 0) {
+            buf.putStr(ix + 1, y, p.search[0..p.search_len], s_bold);
+        }
+        buf.putStr(ix + 1 + @as(u16, @intCast(p.search_len)), y, "\xe2\x96\x88", .{ .fg = hl_accent });
+        y += 1;
+
+        // Column headers
+        const name_w: u16 = mw -| 28;
+        buf.putStr(ix, y, "NAME", s_dim);
+        buf.putStr(ix + name_w, y, "PRICE", s_dim);
+        buf.putStr(ix + name_w + 12, y, "INFO", s_dim);
+        y += 1;
+
+        // Entries
+        if (p.loading) {
+            buf.putStr(ix, y, "Loading...", s_dim);
+            return;
+        }
+
+        const visible: u16 = @intCast(p.visible);
+        const fc = p.filteredCount();
+        if (fc == 0) {
+            buf.putStr(ix, y, "No markets found", s_dim);
+            return;
+        }
+
+        const scroll = p.scroll;
+        var drawn: u16 = 0;
+        var fi: usize = 0;
+        for (0..p.count) |i| {
+            if (!p.entries[i].matchesFilter(p.search[0..p.search_len])) continue;
+            defer fi += 1;
+            if (fi < scroll) continue;
+            if (drawn >= visible) break;
+            const sel = fi == p.selected;
+            const row_y = y + drawn;
+            if (sel) {
+                var cx: u16 = mx + 1;
+                while (cx < mx + mw -| 1) : (cx += 1) buf.putStr(cx, row_y, " ", .{ .bg = hl_border });
+            }
+            const name_style = if (sel) Style{ .fg = hl_accent, .bg = hl_border, .bold = true } else s_white;
+            const dim_style = if (sel) Style{ .fg = hl_text2, .bg = hl_border } else s_dim;
+            buf.putStr(ix, row_y, p.entries[i].displaySlice(), name_style);
+            buf.putStr(ix + name_w, row_y, p.entries[i].midSlice(), dim_style);
+            buf.putStr(ix + name_w + 12, row_y, p.entries[i].detailSlice(), dim_style);
+            drawn += 1;
+        }
+
+        // Help line
+        buf.putStr(ix, my + mh -| 2, "\xe2\x86\x91\xe2\x86\x93:nav  Enter:select  Tab:switch  Esc:close", s_dim);
     }
 
     fn focusIndicator(buf: *Buffer, rect: Rect) void {
@@ -1196,19 +1417,25 @@ const Render = struct {
         if (rect.w > 1 and rect.h > 1) buf.putStr(rect.x + rect.w - 1, rect.y + rect.h - 1, "\xe2\x96\x9f", fs);
     }
 
-    fn infoBar(buf: *Buffer, coin: []const u8, info: *const InfoData, interval: []const u8, rect: Rect) void {
+    fn infoBar(buf: *Buffer, coin: []const u8, info: *const InfoData, interval: []const u8, rect: Rect, is_outcome: bool) void {
         buf.putStr(rect.x + 1, rect.y, coin, s_cyan);
         var x: u16 = rect.x + @as(u16, @intCast(coin.len)) + 2;
-        x = label(buf, x, rect.y, "Mark", info.mark(), s_bold);
-        x = label(buf, x, rect.y, "Oracle", info.oracle(), s_white);
-        x = label(buf, x, rect.y, "24H", info.change_24h(), if (info.is_negative_change) s_bold_red else s_bold_green);
-        x = label(buf, x, rect.y, "Vol", info.volume_24h(), s_white);
-        if (x + 15 < rect.x + rect.w) _ = label(buf, x, rect.y, "OI", info.open_interest(), s_white);
+        if (is_outcome) {
+            x = label(buf, x, rect.y, "Chance", info.mark(), s_bold);
+        } else {
+            x = label(buf, x, rect.y, "Mark", info.mark(), s_bold);
+            x = label(buf, x, rect.y, "Oracle", info.oracle(), s_white);
+            x = label(buf, x, rect.y, "24H", info.change_24h(), if (info.is_negative_change) s_bold_red else s_bold_green);
+            x = label(buf, x, rect.y, "Vol", info.volume_24h(), s_white);
+            if (x + 15 < rect.x + rect.w) _ = label(buf, x, rect.y, "OI", info.open_interest(), s_white);
+        }
         // Separator row
         var sx: u16 = 0;
         while (sx < rect.w) : (sx += 1) buf.putStr(rect.x + sx, rect.y + 1, "\xe2\x94\x80", s_dim);
-        buf.putStr(rect.x + 1, rect.y + 1, "Fund ", s_dim);
-        buf.putStr(rect.x + 6, rect.y + 1, info.funding(), s_green);
+        if (!is_outcome) {
+            buf.putStr(rect.x + 1, rect.y + 1, "Fund ", s_dim);
+            buf.putStr(rect.x + 6, rect.y + 1, info.funding(), s_green);
+        }
         const hint = "i:interval  \xe2\x86\x90\xe2\x86\x92:scroll  Tab:panel  v:actions  D:perf";
         buf.putStr(rect.x + rect.w -| @as(u16, @intCast(hint.len)) -| 1, rect.y + 1, hint, s_dim);
         const bx = rect.x + 7 + @as(u16, @intCast(@min(info.funding().len, 16))) + 2;
@@ -1704,7 +1931,7 @@ const Orders = struct {
             break :blk .{ limit_px, limit_px };
         };
         const px_dec = if (resolved.sz_decimals >= 0) blk: {
-            const pt = if (isSpotAsset(resolved.index))
+            const pt = if (isSpotAsset(resolved.index) or isOutcomeAsset(resolved.index))
                 tick_mod.PriceTick.forSpot(resolved.sz_decimals)
             else
                 tick_mod.PriceTick.forPerp(resolved.sz_decimals);
@@ -1854,7 +2081,7 @@ const Orders = struct {
             break :blk bbo_px.mul(if (is_long) SLIPPAGE_SELL else SLIPPAGE_BUY);
         };
         const px_dec = if (resolved.sz_decimals >= 0) blk: {
-            const pt = if (isSpotAsset(resolved.index))
+            const pt = if (isSpotAsset(resolved.index) or isOutcomeAsset(resolved.index))
                 tick_mod.PriceTick.forSpot(resolved.sz_decimals)
             else
                 tick_mod.PriceTick.forPerp(resolved.sz_decimals);
@@ -2339,6 +2566,114 @@ fn buildInfoFromCtx(ctx: resp_types.AssetContext) InfoData {
     return info;
 }
 
+fn loadPickerData(p: *PickerState, client: *Client) void {
+    p.loading = true;
+    p.count = 0;
+    defer {
+        p.loaded_tab = p.tab;
+        p.loading = false;
+    }
+
+    switch (p.tab) {
+        .perps => {
+            var typed = client.getPerps(null) catch return;
+            defer typed.deinit();
+            for (typed.value.universe) |pm| {
+                if (p.count >= PICKER_MAX) break;
+                var e = &p.entries[p.count];
+                e.* = .{};
+                const cn = @min(pm.name.len, e.coin.len);
+                for (0..cn) |i| e.coin[i] = std.ascii.toUpper(pm.name[i]);
+                e.coin_len = @intCast(cn);
+                @memcpy(e.display[0..cn], e.coin[0..cn]);
+                e.display_len = @intCast(cn);
+                const dl = std.fmt.bufPrint(&e.detail, "{d}x", .{pm.maxLeverage}) catch "";
+                e.detail_len = @intCast(dl.len);
+                p.count += 1;
+            }
+        },
+        .spot => {
+            var typed = client.getSpotMeta() catch return;
+            defer typed.deinit();
+            const tokens = typed.value.tokens;
+            for (typed.value.universe) |pair| {
+                if (p.count >= PICKER_MAX) break;
+                if (pair.tokens[0] >= tokens.len or pair.tokens[1] >= tokens.len) continue;
+                var e = &p.entries[p.count];
+                e.* = .{};
+                const base = tokens[pair.tokens[0]].name;
+                const quote = tokens[pair.tokens[1]].name;
+                const dn = std.fmt.bufPrint(&e.display, "{s}/{s}", .{ base, quote }) catch "";
+                e.display_len = @intCast(dn.len);
+                @memcpy(e.coin[0..dn.len], e.display[0..dn.len]);
+                e.coin_len = @intCast(dn.len);
+                p.count += 1;
+            }
+        },
+        .outcomes => {
+            var typed = client.getOutcomeMeta() catch return;
+            defer typed.deinit();
+            for (typed.value.outcomes) |o| {
+                for (o.sideSpecs, 0..) |side, si| {
+                    if (p.count >= PICKER_MAX) break;
+                    var e = &p.entries[p.count];
+                    e.* = .{};
+                    const encoding = @as(u32, o.outcome) * 10 + @as(u32, @intCast(si));
+                    const cn = std.fmt.bufPrint(&e.coin, "#{d}", .{encoding}) catch "";
+                    e.coin_len = @intCast(cn.len);
+                    e.display_len = @intCast(buildOutcomeDisplay(&e.display, o, side));
+                    const sl = @min(side.name.len, e.detail.len);
+                    @memcpy(e.detail[0..sl], side.name[0..sl]);
+                    e.detail_len = @intCast(sl);
+                    p.count += 1;
+                }
+            }
+        },
+    }
+
+    loadPickerMids(p, client);
+}
+
+fn buildOutcomeDisplay(buf: *[48]u8, o: response.OutcomeInfo, side: response.OutcomeSideSpec) usize {
+    // Parse structured description: "class:priceBinary|underlying:BTC|expiry:20260317-0300|targetPrice:74212|period:1d"
+    if (std.mem.startsWith(u8, o.description, "class:priceBinary")) {
+        var underlying: []const u8 = "?";
+        var target: []const u8 = "?";
+        var iter = std.mem.splitScalar(u8, o.description, '|');
+        while (iter.next()) |part| {
+            if (std.mem.startsWith(u8, part, "underlying:")) underlying = part["underlying:".len..];
+            if (std.mem.startsWith(u8, part, "targetPrice:")) target = part["targetPrice:".len..];
+        }
+        // "BTC > 74212 (Yes)"
+        const r = std.fmt.bufPrint(buf, "{s}>{s} ({s})", .{ underlying, target, side.name }) catch return 0;
+        return r.len;
+    }
+    // Fallback: "Question Name (Side)"
+    const r = std.fmt.bufPrint(buf, "{s} ({s})", .{ o.name[0..@min(o.name.len, 30)], side.name }) catch return 0;
+    return r.len;
+}
+
+fn loadPickerMids(p: *PickerState, client: *Client) void {
+    var result = client.allMids(null) catch return;
+    defer result.deinit();
+    const val = result.json() catch return;
+    if (val != .object) return;
+
+    for (0..p.count) |i| {
+        const coin = p.entries[i].coinSlice();
+        const mid_str = getMidStr(val, coin) orelse continue;
+        const n = @min(mid_str.len, p.entries[i].mid.len);
+        @memcpy(p.entries[i].mid[0..n], mid_str[0..n]);
+        p.entries[i].mid_len = @intCast(n);
+    }
+}
+
+fn getMidStr(val: std.json.Value, coin: []const u8) ?[]const u8 {
+    // Direct lookup — works for perps (BTC), outcomes (#12730), and canonical spot pairs (PURR/USDC)
+    const v = val.object.get(coin) orelse return null;
+    return switch (v) { .string => |s| s, else => null };
+}
+
 // ╔══════════════════════════════════════════════════════════════════╗
 // ║  9. MAIN LOOP                                                   ║
 // ╚══════════════════════════════════════════════════════════════════╝
@@ -2381,8 +2716,11 @@ pub fn run(allocator: std.mem.Allocator, config_in: Config, coin: []const u8) !v
         // 1. Input
         var dirty = false;
         while (app.pollKey()) |key| {
-            if (ui.coin_picking) Input.handleCoinPicker(key, &ui, &shared)
-            else if (key == .char and key.char == '/') { ui.coin_picking = true; ui.coin_input_len = 0; }
+            if (ui.picker.open) Input.handlePicker(key, &ui, &shared)
+            else if (key == .char and key.char == '/') {
+                ui.picker.open = true;
+                ui.picker.reset();
+            }
             else Input.handleKey(key, &ui, &app.running, &ui_client, &config, &shared);
             dirty = true;
         }
@@ -2423,15 +2761,27 @@ pub fn run(allocator: std.mem.Allocator, config_in: Config, coin: []const u8) !v
             if (ui.selected_row < ui.scroll_offset) ui.scroll_offset = ui.selected_row;
         }
 
-        // 4. Snapshot + render
+        // 4. Update picker visible rows from actual terminal size
+        if (ui.picker.open) {
+            const mh = @min(@as(usize, 30), app.height() -| 2);
+            ui.picker.visible = if (mh > 6) mh - 6 else 1;
+        }
+
+        // 5. Snapshot + render
         const snap = Snapshot.take(&shared);
         if (snap.gen != last_gen or dirty) {
             last_gen = snap.gen;
             Render.frame(&app, &ui, &snap);
-            if (ui.coin_picking) Render.coinPickerOverlay(&app, &ui);
         }
 
-        // 4. Sleep
+        // 4. Load picker data (after render so "Loading..." shows first)
+        if (ui.picker.open and ui.picker.loaded_tab == null and !ui.picker.loading) {
+            loadPickerData(&ui.picker, &ui_client);
+            last_gen = 0; // force re-render on next frame
+            continue;
+        }
+
+        // 5. Sleep
         std.Thread.sleep(4_000_000);
     }
 }
