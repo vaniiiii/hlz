@@ -8,14 +8,14 @@
 Zig SDK, CLI, and trading terminal for Hyperliquid.
 
 - **Language**: Zig 0.15.2
-- **Binaries**: `hlz` (891KB CLI), `hlz-terminal` (1036KB terminal)
+- **Binaries**: `hlz` (895KB CLI), `hlz-terminal` (1121KB terminal)
 - **API**: Hyperliquid L1 — https://api.hyperliquid.xyz
 
 ## Build & Run
 
 ```bash
 zig build                              # Debug build → zig-out/bin/hl
-zig build -Doptimize=ReleaseSmall      # Production (891KB)
+zig build -Doptimize=ReleaseSmall      # Production (895KB)
 zig build -Dfast-crypto=true           # Custom GLV (~3.4x faster signing, not audited for servers)
 zig build test                         # Unit tests (183)
 zig build bench                        # Signing benchmarks
@@ -29,7 +29,7 @@ src/
 ├── lib/          Primitives (crypto, encoding, math) — no Hyperliquid knowledge
 ├── sdk/          Hyperliquid SDK (client, ws, signing, types) — imports lib/
 ├── tui/          TUI framework (Buffer, Terminal, Layout, List, Chart) — standalone
-├── cli/          CLI tool (45 commands, args, config, output) — imports sdk/ + tui/
+├── cli/          CLI tool (41 commands, args, config, output) — imports sdk/ + tui/
 └── terminal/     Trading terminal (trade.zig) — imports sdk/ + tui/
 ```
 
@@ -106,7 +106,7 @@ REST thread (500ms loop) — user positions, orders, fills
 | `src/sdk/types.zig` | Order types + msgpack |
 | `src/sdk/ws.zig` | WebSocket subscriptions |
 | `src/cli/main.zig` | Entry point, command dispatch |
-| `src/cli/args.zig` | Argument parser (44 commands) |
+| `src/cli/args.zig` | Argument parser (41 commands) |
 | `src/terminal/trade.zig` | Trading TUI |
 | `src/tui/Buffer.zig` | Double-buffered cell grid |
 | `src/lib/crypto/signer.zig` | secp256k1 ECDSA (stdlib default, custom GLV opt-in) |
