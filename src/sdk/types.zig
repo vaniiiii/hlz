@@ -62,10 +62,25 @@ pub const OrderRequest = struct {
     cloid: Cloid,
 };
 
+/// Builder fee info attached to order actions.
+/// `address` is the builder's 20-byte address, `fee` is in tenths of basis points (5 = 0.5bp).
+pub const Builder = struct {
+    address: [20]u8,
+    fee: u16,
+};
+
+/// hlz builder address (placeholder — replace with real address).
+pub const HLZ_BUILDER_ADDRESS: [20]u8 = .{ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+/// hlz builder fee: 5 = 0.5bp (tenths of basis points).
+pub const HLZ_BUILDER_FEE: u16 = 5;
+/// Default builder for hlz orders.
+pub const HLZ_BUILDER: Builder = .{ .address = HLZ_BUILDER_ADDRESS, .fee = HLZ_BUILDER_FEE };
+
 /// Batch of orders to place.
 pub const BatchOrder = struct {
     orders: []const OrderRequest,
     grouping: OrderGrouping,
+    builder: ?Builder = null,
 };
 
 /// Cancel a single order by exchange-assigned ID.
@@ -229,7 +244,8 @@ pub fn packOrderRequest(p: *msgpack.Packer, order: OrderRequest) msgpack.PackErr
 
 /// Pack a BatchOrder to msgpack.
 pub fn packBatchOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!void {
-    try p.packMapHeader(2);
+    const map_size: u32 = if (batch.builder != null) 3 else 2;
+    try p.packMapHeader(map_size);
 
     // orders: array of OrderRequest
     try p.packStr("orders");
@@ -241,6 +257,12 @@ pub fn packBatchOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!v
     // grouping: enum string
     try p.packStr("grouping");
     try p.packStr(@tagName(batch.grouping));
+
+    // builder: optional
+    if (batch.builder) |builder| {
+        try p.packStr("builder");
+        try packBuilder(p, builder);
+    }
 }
 
 /// Pack a Cancel to msgpack.
@@ -297,10 +319,34 @@ pub const ActionTag = enum {
     agentSetAbstraction,
 };
 
+/// Format a 20-byte address as "0x" + 40 lowercase hex chars.
+pub fn addressToHex(addr: [20]u8) [42]u8 {
+    const charset = "0123456789abcdef";
+    var buf: [42]u8 = undefined;
+    buf[0] = '0';
+    buf[1] = 'x';
+    for (addr, 0..) |byte, i| {
+        buf[2 + i * 2] = charset[byte >> 4];
+        buf[2 + i * 2 + 1] = charset[byte & 0x0f];
+    }
+    return buf;
+}
+
+/// Pack a Builder to msgpack: {"b": "0x...", "f": N}
+fn packBuilder(p: *msgpack.Packer, builder: Builder) msgpack.PackError!void {
+    try p.packMapHeader(2);
+    try p.packStr("b");
+    const addr_hex = addressToHex(builder.address);
+    try p.packStr(&addr_hex);
+    try p.packStr("f");
+    try p.packUint(@intCast(builder.fee));
+}
+
 /// Pack an Action::Order to msgpack (with serde tag = "type").
-/// Output: {"type": "order", "orders": [...], "grouping": "na"}
+/// Output: {"type": "order", "orders": [...], "grouping": "na"} or with builder: {"type": "order", "orders": [...], "grouping": "na", "builder": {"b": "0x...", "f": N}}
 pub fn packActionOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!void {
-    try p.packMapHeader(3); // type + orders + grouping
+    const map_size: u32 = if (batch.builder != null) 4 else 3;
+    try p.packMapHeader(map_size); // type + orders + grouping [+ builder]
 
     // type: "order"
     try p.packStr("type");
@@ -316,6 +362,12 @@ pub fn packActionOrder(p: *msgpack.Packer, batch: BatchOrder) msgpack.PackError!
     // grouping: enum string
     try p.packStr("grouping");
     try p.packStr(@tagName(batch.grouping));
+
+    // builder: optional
+    if (batch.builder) |builder| {
+        try p.packStr("builder");
+        try packBuilder(p, builder);
+    }
 }
 
 /// Pack an Action::Cancel to msgpack (with serde tag).
@@ -1104,4 +1156,93 @@ test "packBatchOrder: matches Rust msgpack vector" {
     try packBatchOrder(&p, batch);
 
     try std.testing.expectEqualSlices(u8, &expected, p.written());
+}
+
+test "packActionOrder: with builder field" {
+    const order = OrderRequest{
+        .asset = 0,
+        .is_buy = true,
+        .limit_px = Decimal.fromString("50000") catch unreachable,
+        .sz = Decimal.fromString("0.1") catch unreachable,
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = ZERO_CLOID,
+    };
+
+    const builder = Builder{
+        .address = HLZ_BUILDER_ADDRESS,
+        .fee = 5,
+    };
+
+    const batch = BatchOrder{
+        .orders = &[_]OrderRequest{order},
+        .grouping = .na,
+        .builder = builder,
+    };
+
+    var buf: [512]u8 = undefined;
+    var p = msgpack.Packer.init(&buf);
+    try packActionOrder(&p, batch);
+
+    const written = p.written();
+
+    // Map of 4 (type + orders + grouping + builder)
+    try std.testing.expectEqual(@as(u8, 0x84), written[0]);
+
+    // Verify builder field is present in the output
+    try std.testing.expect(std.mem.indexOf(u8, written, "builder") != null);
+
+    // Verify "b" key and address string are present
+    try std.testing.expect(std.mem.indexOf(u8, written, "0x0000000000000000000000000000000000000000") != null);
+
+    // Verify the original content (type, orders, grouping) is still correct
+    try std.testing.expect(std.mem.indexOf(u8, written, "order") != null);
+    try std.testing.expect(std.mem.indexOf(u8, written, "grouping") != null);
+}
+
+test "packActionOrder: without builder matches original" {
+    // Without builder, output must be identical to the original test vector
+    const expected_hex = "83a474797065a56f72646572a66f72646572739186a16100a162c3a170a53530303030a173a3302e31a172c2a17481a56c696d697481a3746966a3477463a867726f7570696e67a26e61";
+
+    var expected: [74]u8 = undefined;
+    for (0..74) |i| {
+        expected[i] = std.fmt.parseInt(u8, expected_hex[i * 2 ..][0..2], 16) catch unreachable;
+    }
+
+    const order = OrderRequest{
+        .asset = 0,
+        .is_buy = true,
+        .limit_px = Decimal.fromString("50000") catch unreachable,
+        .sz = Decimal.fromString("0.1") catch unreachable,
+        .reduce_only = false,
+        .order_type = .{ .limit = .{ .tif = .Gtc } },
+        .cloid = ZERO_CLOID,
+    };
+
+    const batch = BatchOrder{
+        .orders = &[_]OrderRequest{order},
+        .grouping = .na,
+        // builder defaults to null
+    };
+
+    var buf: [256]u8 = undefined;
+    var p = msgpack.Packer.init(&buf);
+    try packActionOrder(&p, batch);
+
+    // Must be byte-exact with the original vector (no builder = map of 3)
+    try std.testing.expectEqualSlices(u8, &expected, p.written());
+}
+
+test "addressToHex: zero address" {
+    const addr = [_]u8{0} ** 20;
+    const hex = addressToHex(addr);
+    try std.testing.expectEqualStrings("0x0000000000000000000000000000000000000000", &hex);
+}
+
+test "addressToHex: non-zero address" {
+    var addr = [_]u8{0} ** 20;
+    addr[0] = 0xab;
+    addr[19] = 0xcd;
+    const hex = addressToHex(addr);
+    try std.testing.expectEqualStrings("0xab000000000000000000000000000000000000cd", &hex);
 }
